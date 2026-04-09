@@ -188,7 +188,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;position:relative;}
 .header{flex-shrink:0;height:54px;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--bg2);position:relative;z-index:20;}
 .logo{font-size:18px;opacity:.7;}
-.header h1{font-family:'Playfair Display',serif;font-size:19px;letter-spacing:-.3px;}
+.header h1{font-family:'Playfair Display',serif;font-size:19px;letter-spacing:-.3px;color:var(--text);}
 .header-sub{font-size:11px;color:var(--text2);font-weight:300;margin-left:2px;}
 .main{flex:1;overflow:hidden;display:flex;}
 @media(max-width:660px){.main{flex-direction:column;}}
@@ -243,8 +243,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .drop-zone.over{border-color:var(--amber);color:var(--amber);background:rgba(212,136,26,.05);}
 .drop-icon{font-size:24px;opacity:.4;margin-bottom:6px;}
 .drop-zone p{font-size:12px;line-height:1.6;}
-.pl-footer{flex-shrink:0;padding:7px 14px;border-top:1px solid var(--border);font-size:10px;color:var(--text3);font-family:'DM Mono',monospace;background:var(--bg);text-align:center;}
-.player-panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;background:var(--bg2);overflow:hidden;}
+.pl-footer{flex-shrink:0;padding:7px 14px;border-top:1px solid var(--border);font-size:10px;color:var(--text3);font-family:'DM Mono',monospace;background:var(--bg);display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.clear-btn{background:none;border:1px solid var(--border2);color:var(--red);border-radius:6px;padding:4px 10px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;transition:all .15s;white-space:nowrap;-webkit-tap-highlight-color:transparent;}
+.clear-btn:hover{background:var(--red);color:#fff;border-color:var(--red);}
+.clear-btn:active{transform:scale(.95);}.player-panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;background:var(--bg2);overflow:hidden;}
 @media(max-width:660px){.player-panel{width:100%;flex-shrink:0;border-top:1px solid var(--border);}}
 .now-playing{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px 16px 8px;gap:4px;text-align:center;}
 @media(max-width:660px){.now-playing{flex-direction:row;text-align:left;align-items:center;padding:12px 16px;gap:14px;flex:none;}}
@@ -587,8 +589,7 @@ const busyRef      = useRef(false);
       <div className="app">
         <header className="header">
           <span className="logo">🎵</span>
-          <h1>Worship Setlist</h1>
-          <span className="header-sub">— pitch &amp; tempo studio</span>
+          <h1>PitchList</h1>
           <button className="theme-btn" onClick={e=>{e.stopPropagation();setShowThemes(p=>!p)}}>
             🎨 Theme
           </button>
@@ -707,7 +708,19 @@ const busyRef      = useRef(false);
               )}
             </div>
             <div className="pl-footer">
-              {songs.length>0?`${songs.length} song${songs.length!==1?"s":""} · tap to play & adjust`:"no songs loaded"}
+              <span>{songs.length>0?`${songs.length} song${songs.length!==1?"s":""} · tap to play & adjust`:"no songs loaded"}</span>
+              {songs.length>0&&(
+                <button className="clear-btn"
+                  onClick={()=>{
+                    if(!window.confirm('Clear all songs from the setlist?')) return;
+                    stopSource(); setIsPlaying(false); setActiveIdx(null);
+                    setProgress(0); setDuration(0); pausedAtRef.current=0;
+                    songs.forEach(s=>{ dbDelete(s.id).catch(()=>{}); dbDeleteCache(s.id).catch(()=>{}); });
+                    setSongs([]);
+                  }}>
+                  Clear Setlist
+                </button>
+              )}
             </div>
           </div>
 
