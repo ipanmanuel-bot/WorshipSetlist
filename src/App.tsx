@@ -215,6 +215,15 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .progress-wrap{padding:5px 16px;}
 .prog-bar{background:var(--bg3);border-radius:3px;height:4px;cursor:pointer;position:relative;margin-bottom:5px;-webkit-tap-highlight-color:transparent;}
 .prog-fill{background:linear-gradient(90deg,var(--amber),var(--amber2));height:100%;border-radius:3px;pointer-events:none;}
+.prog-bar{position:relative;}
+.prog-thumb{
+  position:absolute;top:50%;transform:translate(-50%,-50%);
+  width:16px;height:16px;border-radius:50%;
+  background:var(--amber2);border:2px solid var(--bg2);
+  box-shadow:0 1px 6px rgba(0,0,0,.4);
+  pointer-events:none;transition:transform .1s;
+}
+.prog-bar:hover .prog-thumb,.prog-bar:active .prog-thumb{transform:translate(-50%,-50%) scale(1.3);}
 .prog-times{display:flex;justify-content:space-between;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);}
 .transport{padding:8px 16px 16px;display:flex;align-items:center;justify-content:center;gap:10px;}
 .t-btn{min-width:46px;min-height:46px;border-radius:50%;background:none;border:1px solid var(--border2);color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;-webkit-tap-highlight-color:transparent;}
@@ -389,6 +398,40 @@ export default function WorshipSetlist() {
     const rect=e.currentTarget.getBoundingClientRect();
     const ratio=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
     pausedAtRef.current=ratio*duration; playFrom(activeIdx,pausedAtRef.current);
+  };
+
+  const handleScrubStart=e=>{
+    if(activeIdx===null||duration===0) return;
+    e.preventDefault();
+    const bar=e.currentTarget;
+
+    // Pause playback while scrubbing
+    const wasPlaying=isPlayingRef.current;
+    if(wasPlaying){ stopSource(); setIsPlaying(false); }
+
+    const getClientX=ev=>ev.touches?ev.touches[0].clientX:ev.clientX;
+
+    const onMove=ev=>{
+      const rect=bar.getBoundingClientRect();
+      const ratio=Math.max(0,Math.min(1,(getClientX(ev)-rect.left)/rect.width));
+      const seekTo=ratio*duration;
+      pausedAtRef.current=seekTo;
+      setProgress(seekTo);
+    };
+
+    const onUp=()=>{
+      document.removeEventListener('mousemove',onMove);
+      document.removeEventListener('mouseup',onUp);
+      document.removeEventListener('touchmove',onMove);
+      document.removeEventListener('touchend',onUp);
+      // Resume only if was playing before scrub
+      if(wasPlaying) playFrom(activeIdx,pausedAtRef.current);
+    };
+
+    document.addEventListener('mousemove',onMove);
+    document.addEventListener('mouseup',onUp);
+    document.addEventListener('touchmove',onMove,{passive:false});
+    document.addEventListener('touchend',onUp);
   };
 
   const updateSong=(id,key,val)=>setSongs(prev=>prev.map(s=>{
@@ -610,8 +653,12 @@ export default function WorshipSetlist() {
             )}
 
             <div className="progress-wrap">
-              <div className="prog-bar" onClick={handleProgressClick}>
+              <div className="prog-bar"
+                onClick={handleProgressClick}
+                onMouseDown={handleScrubStart}
+                onTouchStart={handleScrubStart}>
                 <div className="prog-fill" style={{width:`${pct}%`}}/>
+                <div className="prog-thumb" style={{left:`${pct}%`}}/>
               </div>
               <div className="prog-times"><span>{fmt(progress)}</span><span>{fmt(duration)}</span></div>
             </div>
