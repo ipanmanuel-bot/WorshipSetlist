@@ -328,7 +328,7 @@ export default function WorshipSetlist() {
                 <span className="song-count">{songs.length}</span>
               </div>
               <button className="add-btn" onClick={()=>fileInputRef.current?.click()}>+ Add Songs</button>
-              <input ref={fileInputRef} type="file" accept="audio/*" multiple style={{display:"none"}}
+              <input ref={fileInputRef} type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.mp4,.caf" multiple style={{display:"none"}}
                 onChange={e=>{loadFiles(e.target.files);e.target.value="";}}/>
             </div>
 
