@@ -24,7 +24,7 @@ function fft(re, im, inv) {
   if(inv) for(let i=0;i<n;i++){re[i]/=n;im[i]/=n;}
 }
 
-/* ─── Phase Vocoder — chunked async (yields every CHUNK hops) ─ */
+/* ─── Phase Vocoder — chunked async ──────────────────────── */
 const yld = () => new Promise(r => setTimeout(r, 0));
 
 async function pvStretchAsync(audioBuffer, stretch, onProg) {
@@ -34,7 +34,6 @@ async function pvStretchAsync(audioBuffer, stretch, onProg) {
   const outLen=Math.max(1,Math.round(inLen*stretch));
   const win=new Float32Array(FFT);
   for(let i=0;i<FFT;i++) win[i]=0.5*(1-Math.cos(TP*i/(FFT-1)));
-
   const result=[];
   for(let ch=0;ch<numCh;ch++){
     const input=audioBuffer.getChannelData(ch);
@@ -68,6 +67,76 @@ async function pvStretchAsync(audioBuffer, stretch, onProg) {
   return result;
 }
 
+/* ─── IndexedDB persistence ──────────────────────────────── */
+const DB_NAME='worship-setlist', DB_STORE='songs', DB_VER=1;
+const openDB=()=>new Promise((res,rej)=>{
+  const req=indexedDB.open(DB_NAME,DB_VER);
+  req.onupgradeneeded=e=>e.target.result.createObjectStore(DB_STORE,{keyPath:'id'});
+  req.onsuccess=e=>res(e.target.result);
+  req.onerror=e=>rej(e.target.error);
+});
+const dbGetAll=async()=>{
+  const db=await openDB();
+  return new Promise((res,rej)=>{
+    const req=db.transaction(DB_STORE).objectStore(DB_STORE).getAll();
+    req.onsuccess=e=>res(e.target.result);
+    req.onerror=e=>rej(e.target.error);
+  });
+};
+const dbPut=async(record)=>{
+  const db=await openDB();
+  return new Promise((res,rej)=>{
+    const req=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).put(record);
+    req.onsuccess=()=>res();
+    req.onerror=e=>rej(e.target.error);
+  });
+};
+const dbDelete=async(id)=>{
+  const db=await openDB();
+  return new Promise((res,rej)=>{
+    const req=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).delete(id);
+    req.onsuccess=()=>res();
+    req.onerror=e=>rej(e.target.error);
+  });
+};
+
+/* ─── Themes ─────────────────────────────────────────────── */
+const THEMES=[
+  { id:'amber', label:'🌙 Dark Amber', vars:{
+    '--bg':'#0c0b08','--bg2':'#131108','--bg3':'#1a180f','--bg4':'#201e14',
+    '--border':'#2a2718','--border2':'#3a3620',
+    '--text':'#f2ead8','--text2':'#8a8070','--text3':'#5a5448',
+    '--amber':'#d4881a','--amber2':'#f0a030','--amber3':'#ffc060','--red':'#c0392b',
+  }},
+  { id:'ocean', label:'🌊 Ocean', vars:{
+    '--bg':'#060d12','--bg2':'#0b1520','--bg3':'#101e2a','--bg4':'#162535',
+    '--border':'#1a2e3d','--border2':'#1f3a4f',
+    '--text':'#d4eaf7','--text2':'#6a90a8','--text3':'#3a5a6a',
+    '--amber':'#1a8fc0','--amber2':'#25aae0','--amber3':'#60ccff','--red':'#e05555',
+  }},
+  { id:'forest', label:'🌿 Forest', vars:{
+    '--bg':'#080d09','--bg2':'#0f150f','--bg3':'#141c14','--bg4':'#192219',
+    '--border':'#1f2c1f','--border2':'#273627',
+    '--text':'#d8edd8','--text2':'#6a8a6a','--text3':'#445844',
+    '--amber':'#3a9e5a','--amber2':'#4dbf6e','--amber3':'#7de89a','--red':'#d44',
+  }},
+  { id:'rose', label:'🌸 Rose', vars:{
+    '--bg':'#110810','--bg2':'#1a0e19','--bg3':'#221422','--bg4':'#2a182a',
+    '--border':'#321e32','--border2':'#3e283e',
+    '--text':'#f5ddf5','--text2':'#9a729a','--text3':'#644864',
+    '--amber':'#c04880','--amber2':'#e0609a','--amber3':'#ff90c0','--red':'#e04444',
+  }},
+  { id:'light', label:'☀️ Light', vars:{
+    '--bg':'#f5f2ec','--bg2':'#ede9e0','--bg3':'#e4dfd4','--bg4':'#dad4c8',
+    '--border':'#ccc6b8','--border2':'#bbb4a4',
+    '--text':'#2a2418','--text2':'#7a7060','--text3':'#aaa090',
+    '--amber':'#c07010','--amber2':'#d88820','--amber3':'#a05808','--red':'#c0392b',
+  }},
+];
+const getSavedTheme=()=>{ try{ return localStorage.getItem('ws-theme')||'amber'; }catch{ return 'amber'; } };
+const saveTheme=id=>{ try{ localStorage.setItem('ws-theme',id); }catch{} };
+const applyTheme=theme=>{ const r=document.documentElement; Object.entries(theme.vars).forEach(([k,v])=>r.style.setProperty(k,v)); };
+
 /* ─── Styles ─────────────────────────────────────────────── */
 const STYLE=`
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
@@ -79,8 +148,8 @@ const STYLE=`
   --amber:#d4881a;--amber2:#f0a030;--amber3:#ffc060;--red:#c0392b;
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;}
-.app{display:flex;flex-direction:column;height:100vh;overflow:hidden;}
-.header{flex-shrink:0;height:54px;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--bg2);}
+.app{display:flex;flex-direction:column;height:100vh;overflow:hidden;position:relative;}
+.header{flex-shrink:0;height:54px;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--bg2);position:relative;z-index:20;}
 .logo{font-size:18px;opacity:.7;}
 .header h1{font-family:'Playfair Display',serif;font-size:19px;letter-spacing:-.3px;}
 .header-sub{font-size:11px;color:var(--text2);font-weight:300;margin-left:2px;}
@@ -148,168 +217,37 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .prog-fill{background:linear-gradient(90deg,var(--amber),var(--amber2));height:100%;border-radius:3px;pointer-events:none;}
 .prog-times{display:flex;justify-content:space-between;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);}
 .transport{padding:8px 16px 16px;display:flex;align-items:center;justify-content:center;gap:10px;}
-.t-btn{min-width:46px;min-height:46px;border-radius:50%;background:none;border:1px solid var(--border2);color:var(--text);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;-webkit-tap-highlight-color:transparent;}
+.t-btn{min-width:46px;min-height:46px;border-radius:50%;background:none;border:1px solid var(--border2);color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;-webkit-tap-highlight-color:transparent;}
 .t-btn:active{transform:scale(.91);}
 .t-btn:hover:not(:disabled){border-color:var(--amber);color:var(--amber);}
-.t-btn.play-btn{min-width:58px;min-height:58px;font-size:20px;background:var(--amber);border-color:var(--amber);color:#fff;}
+.t-btn.play-btn{min-width:58px;min-height:58px;background:var(--amber);border-color:var(--amber);color:#fff;}
 .t-btn.play-btn:hover:not(:disabled){background:var(--amber2);border-color:var(--amber2);}
 .t-btn:disabled{opacity:.2;cursor:not-allowed;}
 .proc-wrap{padding:4px 16px;}
 .proc-label{font-size:10px;color:var(--text2);text-align:center;margin-bottom:4px;font-family:'DM Mono',monospace;}
 .proc-track{background:var(--bg3);border-radius:3px;height:3px;overflow:hidden;}
 .proc-inner{height:100%;background:var(--amber);border-radius:3px;transition:width .15s linear;}
-
-/* Theme picker */
-.theme-btn{
-  margin-left:auto;background:none;border:1px solid var(--border2);
-  color:var(--text2);border-radius:8px;padding:6px 10px;
-  font-size:11px;cursor:pointer;font-family:'DM Sans',sans-serif;
-  display:flex;align-items:center;gap:5px;transition:all .15s;
-  -webkit-tap-highlight-color:transparent;white-space:nowrap;
-}
+.theme-btn{margin-left:auto;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:6px 10px;font-size:11px;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:5px;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;}
 .theme-btn:hover{border-color:var(--amber);color:var(--amber);}
-.theme-dropdown{
-  position:absolute;top:58px;right:12px;z-index:100;
-  background:var(--bg2);border:1px solid var(--border2);
-  border-radius:10px;overflow:hidden;
-  box-shadow:0 8px 32px rgba(0,0,0,.4);min-width:160px;
-}
-.theme-option{
-  padding:11px 16px;font-size:13px;cursor:pointer;
-  transition:background .12s;display:flex;align-items:center;gap:8px;
-  -webkit-tap-highlight-color:transparent;
-}
+.theme-dropdown{position:absolute;top:58px;right:12px;z-index:100;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4);min-width:160px;}
+.theme-option{padding:11px 16px;font-size:13px;cursor:pointer;transition:background .12s;display:flex;align-items:center;gap:8px;-webkit-tap-highlight-color:transparent;}
 .theme-option:hover{background:var(--bg3);}
 .theme-option.active{color:var(--amber);font-weight:600;}
-.theme-dot{
-  width:10px;height:10px;border-radius:50%;flex-shrink:0;
-}
+.theme-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
 `;
 
-/* ─── IndexedDB persistence ─────────────────────────────── */
-const DB_NAME = 'worship-setlist', DB_STORE = 'songs', DB_VER = 1;
-const openDB = () => new Promise((res, rej) => {
-  const req = indexedDB.open(DB_NAME, DB_VER);
-  req.onupgradeneeded = e => e.target.result.createObjectStore(DB_STORE, { keyPath: 'id' });
-  req.onsuccess = e => res(e.target.result);
-  req.onerror   = e => rej(e.target.error);
-});
-const dbGetAll = async () => {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const req = db.transaction(DB_STORE).objectStore(DB_STORE).getAll();
-    req.onsuccess = e => res(e.target.result);
-    req.onerror   = e => rej(e.target.error);
-  });
-};
-const dbPut = async (record) => {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const req = db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).put(record);
-    req.onsuccess = () => res();
-    req.onerror   = e => rej(e.target.error);
-  });
-};
-const dbDelete = async (id) => {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const req = db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).delete(id);
-    req.onsuccess = () => res();
-    req.onerror   = e => rej(e.target.error);
-  });
-};
-/* ─── Themes ─────────────────────────────────────────────── */
-const THEMES = [
-  {
-    id: 'amber',
-    label: '🌙 Dark Amber',
-    vars: {
-      '--bg':'#0c0b08','--bg2':'#131108','--bg3':'#1a180f','--bg4':'#201e14',
-      '--border':'#2a2718','--border2':'#3a3620',
-      '--text':'#f2ead8','--text2':'#8a8070','--text3':'#5a5448',
-      '--amber':'#d4881a','--amber2':'#f0a030','--amber3':'#ffc060','--red':'#c0392b',
-    }
-  },
-  {
-    id: 'ocean',
-    label: '🌊 Ocean',
-    vars: {
-      '--bg':'#060d12','--bg2':'#0b1520','--bg3':'#101e2a','--bg4':'#162535',
-      '--border':'#1a2e3d','--border2':'#1f3a4f',
-      '--text':'#d4eaf7','--text2':'#6a90a8','--text3':'#3a5a6a',
-      '--amber':'#1a8fc0','--amber2':'#25aae0','--amber3':'#60ccff','--red':'#e05555',
-    }
-  },
-  {
-    id: 'forest',
-    label: '🌿 Forest',
-    vars: {
-      '--bg':'#080d09','--bg2':'#0f150f','--bg3':'#141c14','--bg4':'#192219',
-      '--border':'#1f2c1f','--border2':'#273627',
-      '--text':'#d8edd8','--text2':'#6a8a6a','--text3':'#445844',
-      '--amber':'#3a9e5a','--amber2':'#4dbf6e','--amber3':'#7de89a','--red':'#d44',
-    }
-  },
-  {
-    id: 'rose',
-    label: '🌸 Rose',
-    vars: {
-      '--bg':'#110810','--bg2':'#1a0e19','--bg3':'#221422','--bg4':'#2a182a',
-      '--border':'#321e32','--border2':'#3e283e',
-      '--text':'#f5ddf5','--text2':'#9a729a','--text3':'#644864',
-      '--amber':'#c04880','--amber2':'#e0609a','--amber3':'#ff90c0','--red':'#e04444',
-    }
-  },
-  {
-    id: 'light',
-    label: '☀️ Light',
-    vars: {
-      '--bg':'#f5f2ec','--bg2':'#ede9e0','--bg3':'#e4dfd4','--bg4':'#dad4c8',
-      '--border':'#ccc6b8','--border2':'#bbb4a4',
-      '--text':'#2a2418','--text2':'#7a7060','--text3':'#aaa090',
-      '--amber':'#c07010','--amber2':'#d88820','--amber3':'#a05808','--red':'#c0392b',
-    }
-  },
-];
+const fmt=s=>!s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
+const pitchLabel=s=>s===0?"±0":s>0?`+${s}`:`${s}`;
 
-const getSavedTheme = () => {
-  try { return localStorage.getItem('ws-theme') || 'amber'; } catch { return 'amber'; }
-};
-const saveTheme = (id) => {
-  try { localStorage.setItem('ws-theme', id); } catch {}
-};
-const applyTheme = (theme) => {
-  const root = document.documentElement;
-  Object.entries(theme.vars).forEach(([k,v]) => root.style.setProperty(k, v));
-};
-const fmt = s => !s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
-const pitchLabel = s => s===0?"±0":s>0?`+${s}`:`${s}`;
+/* ─── SVG Icons ───────────────────────────────────────────── */
+const IconPrev=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>;
+const IconNext=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm2.5-6 5.5 3.9V8.1L8.5 12zM16 6h2v12h-2z"/></svg>;
+const IconPlay=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
+const IconPause=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>;
+const IconPlaySm=()=><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
 
 export default function WorshipSetlist() {
   const [songs,      setSongs]      = useState([]);
-  // Load persisted songs from IndexedDB on first mount
-  useEffect(() => {
-    (async () => {
-      try {
-        const ctx = getCtx();
-        const saved = await dbGetAll();
-        if (!saved.length) return;
-        const restored = await Promise.all(saved.map(async (s) => {
-          const audioBuffer = await ctx.decodeAudioData(s.arrayBuffer.slice(0));
-          return { id: s.id, name: s.name, audioBuffer,
-            pitch: s.pitch, tempo: s.tempo,
-            cachedBuffer: null, cachedPitch: null, cachedTempo: null };
-        }));
-        // Sort by original order
-        restored.sort((a, b) => {
-          const ai = saved.findIndex(s => s.id === a.id);
-          const bi = saved.findIndex(s => s.id === b.id);
-          return ai - bi;
-        });
-        setSongs(restored);
-      } catch(e) { console.error('Failed to restore songs:', e); }
-    })();
-  }, []);
   const [activeIdx,  setActiveIdx]  = useState(null);
   const [isPlaying,  setIsPlaying]  = useState(false);
   const [progress,   setProgress]   = useState(0);
@@ -317,15 +255,8 @@ export default function WorshipSetlist() {
   const [processing, setProcessing] = useState(false);
   const [procPct,    setProcPct]    = useState(0);
   const [dragOver,   setDragOver]   = useState(false);
-  const [themeId, setThemeId] = useState(getSavedTheme);
+  const [themeId,    setThemeId]    = useState(getSavedTheme);
   const [showThemes, setShowThemes] = useState(false);
-
-  // Apply theme on load and on change
-  useEffect(() => {
-    const t = THEMES.find(t => t.id === themeId) || THEMES[0];
-    applyTheme(t);
-    saveTheme(themeId);
-  }, [themeId]);
 
   const fileInputRef = useRef(null);
   const actxRef      = useRef(null);
@@ -334,7 +265,7 @@ export default function WorshipSetlist() {
   const pausedAtRef  = useRef(0);
   const rafRef       = useRef(null);
   const durationRef  = useRef(0);
-  const genRef = useRef(0);
+  const genRef       = useRef(0);
 
   const songsRef     = useRef(songs);
   const activeIdxRef = useRef(activeIdx);
@@ -343,69 +274,92 @@ export default function WorshipSetlist() {
   useEffect(()=>{ activeIdxRef.current=activeIdx; }, [activeIdx]);
   useEffect(()=>{ isPlayingRef.current=isPlaying; }, [isPlaying]);
 
-  const getCtx = () => {
-    if (!actxRef.current || actxRef.current.state==="closed")
-      actxRef.current = new (window.AudioContext||window.webkitAudioContext)();
+  // Apply theme
+  useEffect(()=>{
+    const t=THEMES.find(t=>t.id===themeId)||THEMES[0];
+    applyTheme(t); saveTheme(themeId);
+  },[themeId]);
+
+  // Close theme dropdown on outside click
+  useEffect(()=>{
+    if(!showThemes) return;
+    const handler=()=>setShowThemes(false);
+    setTimeout(()=>document.addEventListener('click',handler),0);
+    return ()=>document.removeEventListener('click',handler);
+  },[showThemes]);
+
+  // Load persisted songs from IndexedDB on first mount
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const ctx=getCtx();
+        const saved=await dbGetAll();
+        if(!saved.length) return;
+        const restored=await Promise.all(saved.map(async s=>{
+          const audioBuffer=await ctx.decodeAudioData(s.arrayBuffer.slice(0));
+          return{id:s.id,name:s.name,audioBuffer,pitch:s.pitch,tempo:s.tempo,
+            cachedBuffer:null,cachedPitch:null,cachedTempo:null};
+        }));
+        restored.sort((a,b)=>{
+          return saved.findIndex(s=>s.id===a.id)-saved.findIndex(s=>s.id===b.id);
+        });
+        setSongs(restored);
+      }catch(e){ console.error('Failed to restore songs:',e); }
+    })();
+  },[]);
+
+  const getCtx=()=>{
+    if(!actxRef.current||actxRef.current.state==="closed")
+      actxRef.current=new(window.AudioContext||window.webkitAudioContext)();
     return actxRef.current;
   };
 
-  const stopSource = () => {
-    if (sourceRef.current){try{sourceRef.current.stop();}catch{}sourceRef.current.disconnect();sourceRef.current=null;}
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+  const stopSource=()=>{
+    if(sourceRef.current){try{sourceRef.current.stop();}catch{}sourceRef.current.disconnect();sourceRef.current=null;}
+    if(rafRef.current) cancelAnimationFrame(rafRef.current);
   };
 
-  const getProcessedBuffer = useCallback(async (song) => {
-    // Cache hit
-    if (song.cachedBuffer && song.cachedPitch===song.pitch && song.cachedTempo===song.tempo)
+  const getProcessedBuffer=useCallback(async(song)=>{
+    if(song.cachedBuffer&&song.cachedPitch===song.pitch&&song.cachedTempo===song.tempo)
       return song.cachedBuffer;
-    // No-op
-    if (song.pitch===0 && song.tempo===100) return song.audioBuffer;
-
+    if(song.pitch===0&&song.tempo===100) return song.audioBuffer;
     const ab=song.audioBuffer, numCh=ab.numberOfChannels;
     const pitchFactor=Math.pow(2,song.pitch/12), tempoFactor=song.tempo/100;
-
-    // Chunked Phase Vocoder stretch — releases UI every 64 hops
     setProcPct(0);
-    const stretched = await pvStretchAsync(ab, pitchFactor/tempoFactor, p=>setProcPct(p));
+    const stretched=await pvStretchAsync(ab,pitchFactor/tempoFactor,p=>setProcPct(p));
     setProcPct(0.95);
-
-    // Offline resample to apply pitch shift & correct duration
-    const outLen = Math.max(1, Math.round(ab.length/tempoFactor));
-    const offCtx = new OfflineAudioContext(numCh, outLen, ab.sampleRate);
-    const strBuf = offCtx.createBuffer(numCh, stretched[0].length, ab.sampleRate);
+    const outLen=Math.max(1,Math.round(ab.length/tempoFactor));
+    const offCtx=new OfflineAudioContext(numCh,outLen,ab.sampleRate);
+    const strBuf=offCtx.createBuffer(numCh,stretched[0].length,ab.sampleRate);
     for(let c=0;c<numCh;c++) strBuf.copyToChannel(stretched[c],c);
     const src=offCtx.createBufferSource();
     src.buffer=strBuf; src.playbackRate.value=pitchFactor;
     src.connect(offCtx.destination); src.start(0);
     const rendered=await offCtx.startRendering();
     setProcPct(1);
-
     setSongs(prev=>prev.map(s=>s.id===song.id
       ?{...s,cachedBuffer:rendered,cachedPitch:song.pitch,cachedTempo:song.tempo}:s));
     return rendered;
   },[]);
 
-  const playFrom = useCallback(async (idx, offset=0) => {
+  const playFrom=useCallback(async(idx,offset=0)=>{
     const song=songsRef.current[idx]; if(!song) return;
     setProcessing(true); stopSource();
     const ctx=getCtx(); if(ctx.state==="suspended") await ctx.resume();
-    try {
+    try{
       const buffer=await getProcessedBuffer(song);
       durationRef.current=buffer.duration;
       setDuration(buffer.duration); setProgress(offset);
       const src=ctx.createBufferSource();
       src.buffer=buffer; src.connect(ctx.destination); src.start(0,offset);
       startTimeRef.current=ctx.currentTime-offset; sourceRef.current=src;
-      const gen = ++genRef.current;
-      src.onended = () => {
-        if (genRef.current !== gen) return; // stale — a newer playFrom already took over
-        if (!isPlayingRef.current) return;
-        const next = activeIdxRef.current + 1;
-        if (next < songsRef.current.length) {
-          setActiveIdx(next); pausedAtRef.current = 0; playFrom(next, 0);
-        } else {
-          setIsPlaying(false); setProgress(0); pausedAtRef.current = 0;
-        }
+      const gen=++genRef.current;
+      src.onended=()=>{
+        if(genRef.current!==gen) return;
+        if(!isPlayingRef.current) return;
+        const next=activeIdxRef.current+1;
+        if(next<songsRef.current.length){setActiveIdx(next);pausedAtRef.current=0;playFrom(next,0);}
+        else{setIsPlaying(false);setProgress(0);pausedAtRef.current=0;}
       };
       const tick=()=>{
         const el=ctx.currentTime-startTimeRef.current;
@@ -414,8 +368,8 @@ export default function WorshipSetlist() {
       };
       rafRef.current=requestAnimationFrame(tick);
       setActiveIdx(idx); setIsPlaying(true);
-    } catch(e){console.error(e);}
-    finally{setProcessing(false); setProcPct(0);}
+    }catch(e){console.error(e);}
+    finally{setProcessing(false);setProcPct(0);}
   },[getProcessedBuffer]);
 
   const handlePlayPause=()=>{
@@ -424,7 +378,7 @@ export default function WorshipSetlist() {
     if(isPlaying){
       pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
       stopSource(); setIsPlaying(false);
-    } else { playFrom(activeIdx??0, pausedAtRef.current); }
+    } else { playFrom(activeIdx??0,pausedAtRef.current); }
   };
 
   const handlePrev=()=>{if(activeIdx!==null){pausedAtRef.current=0;playFrom(Math.max(0,activeIdx-1),0);}};
@@ -437,27 +391,42 @@ export default function WorshipSetlist() {
     pausedAtRef.current=ratio*duration; playFrom(activeIdx,pausedAtRef.current);
   };
 
-  const updateSong = (id, key, val) => setSongs(prev => prev.map(s => {
-    if (s.id !== id) return s;
-    const updated = { ...s, [key]: val };
-    // Update only pitch/tempo in DB without touching the audio ArrayBuffer
-    openDB().then(db => {
-      const store = db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE);
-      const getReq = store.get(id);
-      getReq.onsuccess = e => {
-        if (e.target.result) {
-          store.put({ ...e.target.result, pitch: updated.pitch, tempo: updated.tempo });
-        }
+  const updateSong=(id,key,val)=>setSongs(prev=>prev.map(s=>{
+    if(s.id!==id) return s;
+    const updated={...s,[key]:val};
+    openDB().then(db=>{
+      const store=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE);
+      const req=store.get(id);
+      req.onsuccess=e=>{
+        if(e.target.result) store.put({...e.target.result,pitch:updated.pitch,tempo:updated.tempo});
       };
-    });
+    }).catch(()=>{});
     return updated;
   }));
+
+  const audioBufferToArrayBuffer=(audioBuffer)=>{
+    const numCh=audioBuffer.numberOfChannels, len=audioBuffer.length, sr=audioBuffer.sampleRate;
+    const ab=new ArrayBuffer(44+len*numCh*2), view=new DataView(ab);
+    const ws=(off,str)=>{for(let i=0;i<str.length;i++)view.setUint8(off+i,str.charCodeAt(i));};
+    ws(0,'RIFF'); view.setUint32(4,36+len*numCh*2,true);
+    ws(8,'WAVE'); ws(12,'fmt '); view.setUint32(16,16,true);
+    view.setUint16(20,1,true); view.setUint16(22,numCh,true);
+    view.setUint32(24,sr,true); view.setUint32(28,sr*numCh*2,true);
+    view.setUint16(32,numCh*2,true); view.setUint16(34,16,true);
+    ws(36,'data'); view.setUint32(40,len*numCh*2,true);
+    let off=44;
+    for(let i=0;i<len;i++) for(let c=0;c<numCh;c++){
+      const v=Math.max(-1,Math.min(1,audioBuffer.getChannelData(c)[i]));
+      view.setInt16(off,v<0?v*0x8000:v*0x7FFF,true); off+=2;
+    }
+    return ab;
+  };
 
   const loadFiles=async files=>{
     const ctx=getCtx();
     const loaded=await Promise.all(
       Array.from(files)
-        .filter(f=>f.type.startsWith("audio/")||/\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(f.name))
+        .filter(f=>f.type.startsWith("audio/")||/\.(mp3|wav|ogg|m4a|aac|flac|mp4|caf)$/i.test(f.name))
         .map(async file=>{
           const ab=await file.arrayBuffer();
           const audioBuffer=await ctx.decodeAudioData(ab);
@@ -466,35 +435,11 @@ export default function WorshipSetlist() {
             pitch:0,tempo:100,cachedBuffer:null,cachedPitch:null,cachedTempo:null};
         })
     );
-    setSongs(prev => {
-      const next = [...prev, ...loaded];
-      // Persist each new song to IndexedDB
-      loaded.forEach(s => {
-        const buf = s.audioBuffer;
-        const numCh = buf.numberOfChannels, len = buf.length, sr = buf.sampleRate;
-        // Re-encode to ArrayBuffer via OfflineAudioContext for storage
-        const offline = new OfflineAudioContext(numCh, len, sr);
-        const src = offline.createBufferSource();
-        src.buffer = buf; src.connect(offline.destination); src.start(0);
-        offline.startRendering().then(rendered => {
-          // Convert rendered buffer back to raw PCM ArrayBuffer
-          const numFrames = rendered.length;
-          const ab = new ArrayBuffer(44 + numFrames * numCh * 2);
-          const view = new DataView(ab);
-          const writeStr = (off, str) => { for(let i=0;i<str.length;i++) view.setUint8(off+i, str.charCodeAt(i)); };
-          writeStr(0,'RIFF'); view.setUint32(4, 36+numFrames*numCh*2, true);
-          writeStr(8,'WAVE'); writeStr(12,'fmt '); view.setUint32(16,16,true);
-          view.setUint16(20,1,true); view.setUint16(22,numCh,true);
-          view.setUint32(24,sr,true); view.setUint32(28,sr*numCh*2,true);
-          view.setUint16(32,numCh*2,true); view.setUint16(34,16,true);
-          writeStr(36,'data'); view.setUint32(40,numFrames*numCh*2,true);
-          let off=44;
-          for(let i=0;i<numFrames;i++) for(let c=0;c<numCh;c++){
-            const val = Math.max(-1,Math.min(1,rendered.getChannelData(c)[i]));
-            view.setInt16(off, val<0?val*0x8000:val*0x7FFF, true); off+=2;
-          }
-          dbPut({ id: s.id, name: s.name, arrayBuffer: ab, pitch: s.pitch, tempo: s.tempo });
-        });
+    setSongs(prev=>{
+      const next=[...prev,...loaded];
+      loaded.forEach(s=>{
+        const arrayBuffer=audioBufferToArrayBuffer(s.audioBuffer);
+        dbPut({id:s.id,name:s.name,arrayBuffer,pitch:s.pitch,tempo:s.tempo}).catch(()=>{});
       });
       return next;
     });
@@ -502,10 +447,10 @@ export default function WorshipSetlist() {
 
   const removeSong=(id,e)=>{
     e.stopPropagation();
+    dbDelete(id).catch(()=>{});
     setSongs(prev=>{
       const ri=prev.findIndex(s=>s.id===id);
       const next=prev.filter(s=>s.id!==id);
-      dbDelete(id);
       if(activeIdx===ri){stopSource();setIsPlaying(false);setActiveIdx(null);setProgress(0);}
       else if(activeIdx>ri) setActiveIdx(i=>i-1);
       return next;
@@ -515,7 +460,7 @@ export default function WorshipSetlist() {
   const currentSong=activeIdx!==null?songs[activeIdx]:null;
   const pct=duration>0?(progress/duration)*100:0;
 
-  return (
+  return(
     <>
       <style>{STYLE}</style>
       <div className="app">
@@ -523,21 +468,20 @@ export default function WorshipSetlist() {
           <span className="logo">🎵</span>
           <h1>Worship Setlist</h1>
           <span className="header-sub">— pitch &amp; tempo studio</span>
-          <button className="theme-btn" onClick={() => setShowThemes(p => !p)}>
+          <button className="theme-btn" onClick={e=>{e.stopPropagation();setShowThemes(p=>!p)}}>
             🎨 Theme
           </button>
-          {showThemes && (
-            <div className="theme-dropdown">
-              {THEMES.map(t => (
+          {showThemes&&(
+            <div className="theme-dropdown" onClick={e=>e.stopPropagation()}>
+              {THEMES.map(t=>(
                 <div key={t.id} className={`theme-option${themeId===t.id?' active':''}`}
-                  onClick={() => { setThemeId(t.id); setShowThemes(false); }}>
-                  <div className="theme-dot" style={{background: t.vars['--amber']}}/>
+                  onClick={()=>{setThemeId(t.id);setShowThemes(false);}}>
+                  <div className="theme-dot" style={{background:t.vars['--amber']}}/>
                   {t.label}
                 </div>
               ))}
             </div>
           )}
-        </header>
         </header>
 
         <div className="main">
@@ -549,7 +493,9 @@ export default function WorshipSetlist() {
                 <span className="song-count">{songs.length}</span>
               </div>
               <button className="add-btn" onClick={()=>fileInputRef.current?.click()}>+ Add Songs</button>
-              <input ref={fileInputRef} type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.mp4,.caf" multiple style={{display:"none"}}
+              <input ref={fileInputRef} type="file"
+                accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.mp4,.caf"
+                multiple style={{display:"none"}}
                 onChange={e=>{loadFiles(e.target.files);e.target.value="";}}/>
             </div>
 
@@ -557,7 +503,6 @@ export default function WorshipSetlist() {
               onDragOver={e=>{e.preventDefault();setDragOver(true);}}
               onDragLeave={()=>setDragOver(false)}
               onDrop={e=>{e.preventDefault();setDragOver(false);loadFiles(e.dataTransfer.files);}}>
-
               {songs.length===0?(
                 <div className={`drop-zone${dragOver?" over":""}`} onClick={()=>fileInputRef.current?.click()}>
                   <div className="drop-icon">🎧</div>
@@ -573,9 +518,7 @@ export default function WorshipSetlist() {
                         onClick={()=>{pausedAtRef.current=0;playFrom(idx,0);}}>
                         <div className="song-row">
                           <div className="song-num">
-                            {isActive && isPlaying
-                              ? <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                              : idx+1}
+                            {isActive&&isPlaying?<IconPlaySm/>:idx+1}
                           </div>
                           <span className="song-name" title={song.name}>{song.name}</span>
                           <div className="song-badges">
@@ -662,9 +605,7 @@ export default function WorshipSetlist() {
             {processing&&(
               <div className="proc-wrap">
                 <div className="proc-label">Processing… {Math.round(procPct*100)}%</div>
-                <div className="proc-track">
-                  <div className="proc-inner" style={{width:`${procPct*100}%`}}/>
-                </div>
+                <div className="proc-track"><div className="proc-inner" style={{width:`${procPct*100}%`}}/></div>
               </div>
             )}
 
@@ -677,22 +618,15 @@ export default function WorshipSetlist() {
 
             <div className="transport">
               <button className="t-btn" onClick={handlePrev} disabled={!currentSong||activeIdx===0}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
-                </svg>
+                <IconPrev/>
               </button>
               <button className="t-btn play-btn"
                 onClick={songs.length>0?handlePlayPause:undefined}
                 disabled={songs.length===0||processing}>
-                {isPlaying
-                  ? <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                  : <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                }
+                {isPlaying?<IconPause/>:<IconPlay/>}
               </button>
               <button className="t-btn" onClick={handleNext} disabled={!currentSong||activeIdx>=songs.length-1}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M6 18l8.5-6L6 6v12zm2.5-6 5.5 3.9V8.1L8.5 12zM16 6h2v12h-2z"/>
-                </svg>
+                <IconNext/>
               </button>
             </div>
           </div>
