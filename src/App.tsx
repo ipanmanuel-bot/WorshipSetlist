@@ -160,11 +160,66 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .proc-inner{height:100%;background:var(--amber);border-radius:3px;transition:width .15s linear;}
 `;
 
+/* ─── IndexedDB persistence ─────────────────────────────── */
+const DB_NAME = 'worship-setlist', DB_STORE = 'songs', DB_VER = 1;
+const openDB = () => new Promise((res, rej) => {
+  const req = indexedDB.open(DB_NAME, DB_VER);
+  req.onupgradeneeded = e => e.target.result.createObjectStore(DB_STORE, { keyPath: 'id' });
+  req.onsuccess = e => res(e.target.result);
+  req.onerror   = e => rej(e.target.error);
+});
+const dbGetAll = async () => {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const req = db.transaction(DB_STORE).objectStore(DB_STORE).getAll();
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = e => rej(e.target.error);
+  });
+};
+const dbPut = async (record) => {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const req = db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).put(record);
+    req.onsuccess = () => res();
+    req.onerror   = e => rej(e.target.error);
+  });
+};
+const dbDelete = async (id) => {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const req = db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).delete(id);
+    req.onsuccess = () => res();
+    req.onerror   = e => rej(e.target.error);
+  });
+};
 const fmt = s => !s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
 const pitchLabel = s => s===0?"±0":s>0?`+${s}`:`${s}`;
 
 export default function WorshipSetlist() {
   const [songs,      setSongs]      = useState([]);
+  // Load persisted songs from IndexedDB on first mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const ctx = getCtx();
+        const saved = await dbGetAll();
+        if (!saved.length) return;
+        const restored = await Promise.all(saved.map(async (s) => {
+          const audioBuffer = await ctx.decodeAudioData(s.arrayBuffer.slice(0));
+          return { id: s.id, name: s.name, audioBuffer,
+            pitch: s.pitch, tempo: s.tempo,
+            cachedBuffer: null, cachedPitch: null, cachedTempo: null };
+        }));
+        // Sort by original order
+        restored.sort((a, b) => {
+          const ai = saved.findIndex(s => s.id === a.id);
+          const bi = saved.findIndex(s => s.id === b.id);
+          return ai - bi;
+        });
+        setSongs(restored);
+      } catch(e) { console.error('Failed to restore songs:', e); }
+    })();
+  }, []);
   const [activeIdx,  setActiveIdx]  = useState(null);
   const [isPlaying,  setIsPlaying]  = useState(false);
   const [progress,   setProgress]   = useState(0);
@@ -277,7 +332,21 @@ export default function WorshipSetlist() {
     pausedAtRef.current=ratio*duration; playFrom(activeIdx,pausedAtRef.current);
   };
 
-  const updateSong=(id,key,val)=>setSongs(prev=>prev.map(s=>s.id===id?{...s,[key]:val}:s));
+  const updateSong = (id, key, val) => setSongs(prev => prev.map(s => {
+    if (s.id !== id) return s;
+    const updated = { ...s, [key]: val };
+    // Update only pitch/tempo in DB without touching the audio ArrayBuffer
+    openDB().then(db => {
+      const store = db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE);
+      const getReq = store.get(id);
+      getReq.onsuccess = e => {
+        if (e.target.result) {
+          store.put({ ...e.target.result, pitch: updated.pitch, tempo: updated.tempo });
+        }
+      };
+    });
+    return updated;
+  }));
 
   const loadFiles=async files=>{
     const ctx=getCtx();
@@ -292,7 +361,38 @@ export default function WorshipSetlist() {
             pitch:0,tempo:100,cachedBuffer:null,cachedPitch:null,cachedTempo:null};
         })
     );
-    setSongs(prev=>[...prev,...loaded]);
+    setSongs(prev => {
+      const next = [...prev, ...loaded];
+      // Persist each new song to IndexedDB
+      loaded.forEach(s => {
+        const buf = s.audioBuffer;
+        const numCh = buf.numberOfChannels, len = buf.length, sr = buf.sampleRate;
+        // Re-encode to ArrayBuffer via OfflineAudioContext for storage
+        const offline = new OfflineAudioContext(numCh, len, sr);
+        const src = offline.createBufferSource();
+        src.buffer = buf; src.connect(offline.destination); src.start(0);
+        offline.startRendering().then(rendered => {
+          // Convert rendered buffer back to raw PCM ArrayBuffer
+          const numFrames = rendered.length;
+          const ab = new ArrayBuffer(44 + numFrames * numCh * 2);
+          const view = new DataView(ab);
+          const writeStr = (off, str) => { for(let i=0;i<str.length;i++) view.setUint8(off+i, str.charCodeAt(i)); };
+          writeStr(0,'RIFF'); view.setUint32(4, 36+numFrames*numCh*2, true);
+          writeStr(8,'WAVE'); writeStr(12,'fmt '); view.setUint32(16,16,true);
+          view.setUint16(20,1,true); view.setUint16(22,numCh,true);
+          view.setUint32(24,sr,true); view.setUint32(28,sr*numCh*2,true);
+          view.setUint16(32,numCh*2,true); view.setUint16(34,16,true);
+          writeStr(36,'data'); view.setUint32(40,numFrames*numCh*2,true);
+          let off=44;
+          for(let i=0;i<numFrames;i++) for(let c=0;c<numCh;c++){
+            const val = Math.max(-1,Math.min(1,rendered.getChannelData(c)[i]));
+            view.setInt16(off, val<0?val*0x8000:val*0x7FFF, true); off+=2;
+          }
+          dbPut({ id: s.id, name: s.name, arrayBuffer: ab, pitch: s.pitch, tempo: s.tempo });
+        });
+      });
+      return next;
+    });
   };
 
   const removeSong=(id,e)=>{
@@ -300,6 +400,7 @@ export default function WorshipSetlist() {
     setSongs(prev=>{
       const ri=prev.findIndex(s=>s.id===id);
       const next=prev.filter(s=>s.id!==id);
+      dbDelete(id);
       if(activeIdx===ri){stopSource();setIsPlaying(false);setActiveIdx(null);setProgress(0);}
       else if(activeIdx>ri) setActiveIdx(i=>i-1);
       return next;
