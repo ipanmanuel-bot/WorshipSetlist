@@ -68,13 +68,50 @@ async function pvStretchAsync(audioBuffer, stretch, onProg) {
 }
 
 /* ─── IndexedDB persistence ──────────────────────────────── */
-const DB_NAME='worship-setlist', DB_STORE='songs', DB_VER=1;
+const DB_NAME='worship-setlist', DB_STORE='songs', DB_CACHE='buffers', DB_VER=2;
 const openDB=()=>new Promise((res,rej)=>{
   const req=indexedDB.open(DB_NAME,DB_VER);
-  req.onupgradeneeded=e=>e.target.result.createObjectStore(DB_STORE,{keyPath:'id'});
+  req.onupgradeneeded=e=>{
+    const db=e.target.result;
+    if(!db.objectStoreNames.contains(DB_STORE))
+      db.createObjectStore(DB_STORE,{keyPath:'id'});
+    if(!db.objectStoreNames.contains(DB_CACHE))
+      db.createObjectStore(DB_CACHE,{keyPath:'key'});
+  };
   req.onsuccess=e=>res(e.target.result);
   req.onerror=e=>rej(e.target.error);
 });
+
+const dbGetCache=async(key)=>{
+  const db=await openDB();
+  return new Promise((res,rej)=>{
+    const req=db.transaction(DB_CACHE).objectStore(DB_CACHE).get(key);
+    req.onsuccess=e=>res(e.target.result||null);
+    req.onerror=e=>rej(e.target.error);
+  });
+};
+const dbPutCache=async(key,arrayBuffer)=>{
+  const db=await openDB();
+  return new Promise((res,rej)=>{
+    const req=db.transaction(DB_CACHE,'readwrite').objectStore(DB_CACHE).put({key,arrayBuffer});
+    req.onsuccess=()=>res();
+    req.onerror=e=>rej(e.target.error);
+  });
+};
+const dbDeleteCache=async(songId)=>{
+  // Delete all cached buffers for a song when it's removed
+  const db=await openDB();
+  const store=db.transaction(DB_CACHE,'readwrite').objectStore(DB_CACHE);
+  return new Promise((res,rej)=>{
+    const req=store.getAllKeys();
+    req.onsuccess=e=>{
+      const keys=e.target.result.filter(k=>k.startsWith(songId+'-'));
+      keys.forEach(k=>store.delete(k));
+      res();
+    };
+    req.onerror=e=>rej(e.target.error);
+  });
+};
 const dbGetAll=async()=>{
   const db=await openDB();
   return new Promise((res,rej)=>{
@@ -275,7 +312,7 @@ export default function WorshipSetlist() {
   const rafRef       = useRef(null);
   const durationRef  = useRef(0);
   const genRef       = useRef(0);
-
+const busyRef      = useRef(false);
   const songsRef     = useRef(songs);
   const activeIdxRef = useRef(activeIdx);
   const isPlayingRef = useRef(isPlaying);
@@ -329,9 +366,28 @@ export default function WorshipSetlist() {
   };
 
   const getProcessedBuffer=useCallback(async(song)=>{
+    // 1. In-memory cache hit (fastest)
     if(song.cachedBuffer&&song.cachedPitch===song.pitch&&song.cachedTempo===song.tempo)
       return song.cachedBuffer;
+
+    // 2. No processing needed
     if(song.pitch===0&&song.tempo===100) return song.audioBuffer;
+
+    const cacheKey=`${song.id}-${song.pitch}-${song.tempo}`;
+
+    // 3. IndexedDB cache hit — load and decode, skip processing entirely
+    try{
+      const cached=await dbGetCache(cacheKey);
+      if(cached){
+        const ctx=getCtx();
+        const rendered=await ctx.decodeAudioData(cached.arrayBuffer.slice(0));
+        setSongs(prev=>prev.map(s=>s.id===song.id
+          ?{...s,cachedBuffer:rendered,cachedPitch:song.pitch,cachedTempo:song.tempo}:s));
+        return rendered;
+      }
+    }catch(e){ console.warn('Cache read failed:',e); }
+
+    // 4. Process from scratch
     const ab=song.audioBuffer, numCh=ab.numberOfChannels;
     const pitchFactor=Math.pow(2,song.pitch/12), tempoFactor=song.tempo/100;
     setProcPct(0);
@@ -346,13 +402,22 @@ export default function WorshipSetlist() {
     src.connect(offCtx.destination); src.start(0);
     const rendered=await offCtx.startRendering();
     setProcPct(1);
+
+    // 5. Save to IndexedDB cache for next time
+    try{
+      const arrayBuffer=audioBufferToArrayBuffer(rendered);
+      dbPutCache(cacheKey,arrayBuffer).catch(()=>{});
+    }catch(e){ console.warn('Cache write failed:',e); }
+
     setSongs(prev=>prev.map(s=>s.id===song.id
       ?{...s,cachedBuffer:rendered,cachedPitch:song.pitch,cachedTempo:song.tempo}:s));
     return rendered;
   },[]);
 
   const playFrom=useCallback(async(idx,offset=0)=>{
-    const song=songsRef.current[idx]; if(!song) return;
+    if(busyRef.current) return;
+    busyRef.current=true;
+    const song=songsRef.current[idx]; if(!song){ busyRef.current=false; return; }
     setProcessing(true); stopSource();
     const ctx=getCtx(); if(ctx.state==="suspended") await ctx.resume();
     try{
@@ -378,7 +443,7 @@ export default function WorshipSetlist() {
       rafRef.current=requestAnimationFrame(tick);
       setActiveIdx(idx); setIsPlaying(true);
     }catch(e){console.error(e);}
-    finally{setProcessing(false);setProcPct(0);}
+    finally{setProcessing(false);setProcPct(0);busyRef.current=false;}
   },[getProcessedBuffer]);
 
   const handlePlayPause=()=>{
@@ -491,6 +556,7 @@ export default function WorshipSetlist() {
   const removeSong=(id,e)=>{
     e.stopPropagation();
     dbDelete(id).catch(()=>{});
+    dbDeleteCache(id).catch(()=>{});
     setSongs(prev=>{
       const ri=prev.findIndex(s=>s.id===id);
       const next=prev.filter(s=>s.id!==id);
