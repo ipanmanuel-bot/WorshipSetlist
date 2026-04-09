@@ -227,6 +227,18 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .c-btn:hover{background:var(--amber);border-color:var(--amber);color:#fff;}
 .c-btn:active{transform:scale(.92);}
 .tempo-slider{width:100%;accent-color:var(--amber);cursor:pointer;margin-top:8px;height:4px;display:block;}
+.play-now-btn{
+  grid-column:1/-1;width:100%;margin-top:2px;
+  background:var(--amber);color:#fff;border:none;
+  border-radius:8px;padding:10px;font-size:13px;font-weight:600;
+  cursor:pointer;font-family:'DM Sans',sans-serif;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:background .15s;min-height:42px;
+  -webkit-tap-highlight-color:transparent;
+}
+.play-now-btn:hover:not(:disabled){background:var(--amber2);}
+.play-now-btn:active:not(:disabled){transform:scale(.97);}
+.play-now-btn:disabled{opacity:.5;cursor:not-allowed;}
 .drop-zone{margin:8px;border:1px dashed var(--border2);border-radius:10px;padding:22px 14px;text-align:center;color:var(--text3);transition:all .2s;cursor:pointer;}
 .drop-zone.over{border-color:var(--amber);color:var(--amber);background:rgba(212,136,26,.05);}
 .drop-icon{font-size:24px;opacity:.4;margin-bottom:6px;}
@@ -624,7 +636,13 @@ const busyRef      = useRef(false);
                     const isActive=idx===activeIdx;
                     return(
                       <div key={song.id} className={`song-item${isActive?" active":""}`}
-                        onClick={()=>{pausedAtRef.current=0;playFrom(idx,0);}}>
+                        onClick={()=>{
+                          if(!isActive){
+                            stopSource(); setIsPlaying(false);
+                            setActiveIdx(idx); pausedAtRef.current=0;
+                            setProgress(0); setDuration(0);
+                          }
+                        }}>
                         <div className="song-row">
                           <div className="song-num">
                             {isActive&&isPlaying?<IconPlaySm/>:idx+1}
@@ -669,6 +687,12 @@ const busyRef      = useRef(false);
                                 min={50} max={150} value={song.tempo}
                                 onChange={e=>updateSong(song.id,"tempo",Number(e.target.value))}/>
                             </div>
+                            <button className="play-now-btn"
+                              disabled={processing}
+                              onClick={e=>{e.stopPropagation();pausedAtRef.current=0;playFrom(idx,0);}}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                              {processing&&activeIdx===idx ? `Processing… ${Math.round(procPct*100)}%` : 'Play'}
+                            </button>
                           </div>
                         )}
                       </div>
