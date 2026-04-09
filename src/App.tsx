@@ -158,6 +158,32 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .proc-label{font-size:10px;color:var(--text2);text-align:center;margin-bottom:4px;font-family:'DM Mono',monospace;}
 .proc-track{background:var(--bg3);border-radius:3px;height:3px;overflow:hidden;}
 .proc-inner{height:100%;background:var(--amber);border-radius:3px;transition:width .15s linear;}
+
+/* Theme picker */
+.theme-btn{
+  margin-left:auto;background:none;border:1px solid var(--border2);
+  color:var(--text2);border-radius:8px;padding:6px 10px;
+  font-size:11px;cursor:pointer;font-family:'DM Sans',sans-serif;
+  display:flex;align-items:center;gap:5px;transition:all .15s;
+  -webkit-tap-highlight-color:transparent;white-space:nowrap;
+}
+.theme-btn:hover{border-color:var(--amber);color:var(--amber);}
+.theme-dropdown{
+  position:absolute;top:58px;right:12px;z-index:100;
+  background:var(--bg2);border:1px solid var(--border2);
+  border-radius:10px;overflow:hidden;
+  box-shadow:0 8px 32px rgba(0,0,0,.4);min-width:160px;
+}
+.theme-option{
+  padding:11px 16px;font-size:13px;cursor:pointer;
+  transition:background .12s;display:flex;align-items:center;gap:8px;
+  -webkit-tap-highlight-color:transparent;
+}
+.theme-option:hover{background:var(--bg3);}
+.theme-option.active{color:var(--amber);font-weight:600;}
+.theme-dot{
+  width:10px;height:10px;border-radius:50%;flex-shrink:0;
+}
 `;
 
 /* ─── IndexedDB persistence ─────────────────────────────── */
@@ -191,6 +217,70 @@ const dbDelete = async (id) => {
     req.onsuccess = () => res();
     req.onerror   = e => rej(e.target.error);
   });
+};
+/* ─── Themes ─────────────────────────────────────────────── */
+const THEMES = [
+  {
+    id: 'amber',
+    label: '🌙 Dark Amber',
+    vars: {
+      '--bg':'#0c0b08','--bg2':'#131108','--bg3':'#1a180f','--bg4':'#201e14',
+      '--border':'#2a2718','--border2':'#3a3620',
+      '--text':'#f2ead8','--text2':'#8a8070','--text3':'#5a5448',
+      '--amber':'#d4881a','--amber2':'#f0a030','--amber3':'#ffc060','--red':'#c0392b',
+    }
+  },
+  {
+    id: 'ocean',
+    label: '🌊 Ocean',
+    vars: {
+      '--bg':'#060d12','--bg2':'#0b1520','--bg3':'#101e2a','--bg4':'#162535',
+      '--border':'#1a2e3d','--border2':'#1f3a4f',
+      '--text':'#d4eaf7','--text2':'#6a90a8','--text3':'#3a5a6a',
+      '--amber':'#1a8fc0','--amber2':'#25aae0','--amber3':'#60ccff','--red':'#e05555',
+    }
+  },
+  {
+    id: 'forest',
+    label: '🌿 Forest',
+    vars: {
+      '--bg':'#080d09','--bg2':'#0f150f','--bg3':'#141c14','--bg4':'#192219',
+      '--border':'#1f2c1f','--border2':'#273627',
+      '--text':'#d8edd8','--text2':'#6a8a6a','--text3':'#445844',
+      '--amber':'#3a9e5a','--amber2':'#4dbf6e','--amber3':'#7de89a','--red':'#d44',
+    }
+  },
+  {
+    id: 'rose',
+    label: '🌸 Rose',
+    vars: {
+      '--bg':'#110810','--bg2':'#1a0e19','--bg3':'#221422','--bg4':'#2a182a',
+      '--border':'#321e32','--border2':'#3e283e',
+      '--text':'#f5ddf5','--text2':'#9a729a','--text3':'#644864',
+      '--amber':'#c04880','--amber2':'#e0609a','--amber3':'#ff90c0','--red':'#e04444',
+    }
+  },
+  {
+    id: 'light',
+    label: '☀️ Light',
+    vars: {
+      '--bg':'#f5f2ec','--bg2':'#ede9e0','--bg3':'#e4dfd4','--bg4':'#dad4c8',
+      '--border':'#ccc6b8','--border2':'#bbb4a4',
+      '--text':'#2a2418','--text2':'#7a7060','--text3':'#aaa090',
+      '--amber':'#c07010','--amber2':'#d88820','--amber3':'#a05808','--red':'#c0392b',
+    }
+  },
+];
+
+const getSavedTheme = () => {
+  try { return localStorage.getItem('ws-theme') || 'amber'; } catch { return 'amber'; }
+};
+const saveTheme = (id) => {
+  try { localStorage.setItem('ws-theme', id); } catch {}
+};
+const applyTheme = (theme) => {
+  const root = document.documentElement;
+  Object.entries(theme.vars).forEach(([k,v]) => root.style.setProperty(k, v));
 };
 const fmt = s => !s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
 const pitchLabel = s => s===0?"±0":s>0?`+${s}`:`${s}`;
@@ -227,6 +317,15 @@ export default function WorshipSetlist() {
   const [processing, setProcessing] = useState(false);
   const [procPct,    setProcPct]    = useState(0);
   const [dragOver,   setDragOver]   = useState(false);
+  const [themeId, setThemeId] = useState(getSavedTheme);
+  const [showThemes, setShowThemes] = useState(false);
+
+  // Apply theme on load and on change
+  useEffect(() => {
+    const t = THEMES.find(t => t.id === themeId) || THEMES[0];
+    applyTheme(t);
+    saveTheme(themeId);
+  }, [themeId]);
 
   const fileInputRef = useRef(null);
   const actxRef      = useRef(null);
@@ -235,6 +334,7 @@ export default function WorshipSetlist() {
   const pausedAtRef  = useRef(0);
   const rafRef       = useRef(null);
   const durationRef  = useRef(0);
+  const genRef = useRef(0);
 
   const songsRef     = useRef(songs);
   const activeIdxRef = useRef(activeIdx);
@@ -296,11 +396,16 @@ export default function WorshipSetlist() {
       const src=ctx.createBufferSource();
       src.buffer=buffer; src.connect(ctx.destination); src.start(0,offset);
       startTimeRef.current=ctx.currentTime-offset; sourceRef.current=src;
-      src.onended=()=>{
-        if(!isPlayingRef.current) return;
-        const next=activeIdxRef.current+1;
-        if(next<songsRef.current.length){setActiveIdx(next);pausedAtRef.current=0;playFrom(next,0);}
-        else{setIsPlaying(false);setProgress(0);pausedAtRef.current=0;}
+      const gen = ++genRef.current;
+      src.onended = () => {
+        if (genRef.current !== gen) return; // stale — a newer playFrom already took over
+        if (!isPlayingRef.current) return;
+        const next = activeIdxRef.current + 1;
+        if (next < songsRef.current.length) {
+          setActiveIdx(next); pausedAtRef.current = 0; playFrom(next, 0);
+        } else {
+          setIsPlaying(false); setProgress(0); pausedAtRef.current = 0;
+        }
       };
       const tick=()=>{
         const el=ctx.currentTime-startTimeRef.current;
@@ -418,6 +523,21 @@ export default function WorshipSetlist() {
           <span className="logo">🎵</span>
           <h1>Worship Setlist</h1>
           <span className="header-sub">— pitch &amp; tempo studio</span>
+          <button className="theme-btn" onClick={() => setShowThemes(p => !p)}>
+            🎨 Theme
+          </button>
+          {showThemes && (
+            <div className="theme-dropdown">
+              {THEMES.map(t => (
+                <div key={t.id} className={`theme-option${themeId===t.id?' active':''}`}
+                  onClick={() => { setThemeId(t.id); setShowThemes(false); }}>
+                  <div className="theme-dot" style={{background: t.vars['--amber']}}/>
+                  {t.label}
+                </div>
+              ))}
+            </div>
+          )}
+        </header>
         </header>
 
         <div className="main">
@@ -452,7 +572,11 @@ export default function WorshipSetlist() {
                       <div key={song.id} className={`song-item${isActive?" active":""}`}
                         onClick={()=>{pausedAtRef.current=0;playFrom(idx,0);}}>
                         <div className="song-row">
-                          <div className="song-num">{isActive&&isPlaying?"▶":idx+1}</div>
+                          <div className="song-num">
+                            {isActive && isPlaying
+                              ? <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                              : idx+1}
+                          </div>
                           <span className="song-name" title={song.name}>{song.name}</span>
                           <div className="song-badges">
                             <span className={`badge${song.pitch===0?" neutral":""}`}>{pitchLabel(song.pitch)}st</span>
@@ -552,13 +676,24 @@ export default function WorshipSetlist() {
             </div>
 
             <div className="transport">
-              <button className="t-btn" onClick={handlePrev} disabled={!currentSong||activeIdx===0}>⏮</button>
+              <button className="t-btn" onClick={handlePrev} disabled={!currentSong||activeIdx===0}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
+                </svg>
+              </button>
               <button className="t-btn play-btn"
                 onClick={songs.length>0?handlePlayPause:undefined}
                 disabled={songs.length===0||processing}>
-                {isPlaying?"⏸":"▶"}
+                {isPlaying
+                  ? <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                  : <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                }
               </button>
-              <button className="t-btn" onClick={handleNext} disabled={!currentSong||activeIdx>=songs.length-1}>⏭</button>
+              <button className="t-btn" onClick={handleNext} disabled={!currentSong||activeIdx>=songs.length-1}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 18l8.5-6L6 6v12zm2.5-6 5.5 3.9V8.1L8.5 12zM16 6h2v12h-2z"/>
+                </svg>
+              </button>
             </div>
           </div>
         </div>
