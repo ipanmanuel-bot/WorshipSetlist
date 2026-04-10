@@ -139,17 +139,17 @@ const dbDelete=async(id)=>{
 
 /* ─── Themes ─────────────────────────────────────────────── */
 const THEMES=[
-  { id:'amber', label:'🌙 Dark Amber', vars:{
-    '--bg':'#0c0b08','--bg2':'#131108','--bg3':'#1a180f','--bg4':'#201e14',
-    '--border':'#2a2718','--border2':'#3a3620',
-    '--text':'#f2ead8','--text2':'#8a8070','--text3':'#5a5448',
-    '--amber':'#d4881a','--amber2':'#f0a030','--amber3':'#ffc060','--red':'#c0392b',
-  }},
   { id:'ocean', label:'🌊 Ocean', vars:{
     '--bg':'#060d12','--bg2':'#0b1520','--bg3':'#101e2a','--bg4':'#162535',
     '--border':'#1a2e3d','--border2':'#1f3a4f',
     '--text':'#d4eaf7','--text2':'#6a90a8','--text3':'#3a5a6a',
     '--amber':'#1a8fc0','--amber2':'#25aae0','--amber3':'#60ccff','--red':'#e05555',
+  }},
+  { id:'amber', label:'🌙 Dark Amber', vars:{
+    '--bg':'#0c0b08','--bg2':'#131108','--bg3':'#1a180f','--bg4':'#201e14',
+    '--border':'#2a2718','--border2':'#3a3620',
+    '--text':'#f2ead8','--text2':'#8a8070','--text3':'#5a5448',
+    '--amber':'#d4881a','--amber2':'#f0a030','--amber3':'#ffc060','--red':'#c0392b',
   }},
   { id:'forest', label:'🌿 Forest', vars:{
     '--bg':'#080d09','--bg2':'#0f150f','--bg3':'#141c14','--bg4':'#192219',
@@ -170,7 +170,7 @@ const THEMES=[
     '--amber':'#c07010','--amber2':'#d88820','--amber3':'#a05808','--red':'#c0392b',
   }},
 ];
-const getSavedTheme=()=>{ try{ return localStorage.getItem('ws-theme')||'amber'; }catch{ return 'amber'; } };
+const getSavedTheme=()=>{ try{ return localStorage.getItem('ws-theme')||'ocean'; }catch{ return 'ocean'; } };
 const saveTheme=id=>{ try{ localStorage.setItem('ws-theme',id); }catch{} };
 const applyTheme=theme=>{ const r=document.documentElement; Object.entries(theme.vars).forEach(([k,v])=>r.style.setProperty(k,v)); };
 
