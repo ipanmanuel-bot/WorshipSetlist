@@ -770,7 +770,11 @@ const busyRef      = useRef(false);
                         onDragOver={e=>e.preventDefault()}
                         onDragEnd={handleDragEnd}
                         onClick={()=>{
-                          if(!isActive){
+                          if(isActive){
+                            stopSource(); setIsPlaying(false);
+                            setActiveIdx(null); pausedAtRef.current=0;
+                            setProgress(0); setDuration(0);
+                          } else {
                             stopSource(); setIsPlaying(false);
                             setActiveIdx(idx); pausedAtRef.current=0;
                             setProgress(0); setDuration(0);
