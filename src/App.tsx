@@ -188,7 +188,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;position:relative;}
 .header{flex-shrink:0;height:54px;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--bg2);position:relative;z-index:20;}
 .logo{font-size:18px;opacity:.7;}
-.header h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;letter-spacing:-.5px;color:var(--text);}
+.header h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:600;letter-spacing:-.5px;color:var(--text);}
 .header-sub{font-size:11px;color:var(--text2);font-weight:300;margin-left:2px;}
 .main{flex:1;overflow:hidden;display:flex;}
 @media(max-width:660px){.main{flex-direction:column;}}
