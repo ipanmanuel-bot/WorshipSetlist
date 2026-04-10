@@ -217,9 +217,25 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .song-item:hover .song-del{opacity:1;}
 @media(max-width:660px){.song-del{opacity:.45;}}
 .song-del:hover{color:var(--red);}
-.song-item.drag-over{border-color:var(--amber2);transform:scale(1.01);transition:transform .1s,border-color .1s;}
-.song-item[draggable]{cursor:grab;}
-.song-item[draggable]:active{cursor:grabbing;}
+.song-item.drag-over{border-color:var(--amber2) !important;background:var(--bg4) !important;}
+.song-item.dragging{opacity:.4;}
+.song-item.floating{
+  opacity:1 !important;border-color:var(--amber) !important;
+  box-shadow:0 12px 40px rgba(0,0,0,.5);
+  transform:scale(1.03) rotate(0.8deg);
+  z-index:999;pointer-events:none;
+}
+.drag-handle{
+  display:flex;flex-direction:column;justify-content:center;gap:3px;
+  padding:8px 6px 8px 2px;cursor:grab;flex-shrink:0;opacity:.35;
+  transition:opacity .15s;touch-action:none;
+}
+.drag-handle:active{cursor:grabbing;}
+.song-item:hover .drag-handle{opacity:.7;}
+.drag-handle span{
+  display:block;width:14px;height:1.5px;
+  background:var(--text);border-radius:2px;
+}
 .song-controls{padding:0 12px 12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;}
 .ctrl-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;}
 .ctrl-title{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:6px;font-weight:600;}
@@ -471,8 +487,21 @@ const busyRef      = useRef(false);
     finally{setProcessing(false);setProcPct(0);busyRef.current=false;}
   },[getProcessedBuffer]);
 
-  const handleDragStart=(idx)=>{
+  const floatRef     = useRef(null); // cloned floating element
+  const touchSrcIdx  = useRef(null);
+
+  // ── Desktop drag ────────────────────────────────────────────
+  const handleDragStart=(e,idx)=>{
     dragSrcRef.current=idx;
+    // Transparent drag image so we show .dragging class instead
+    const blank=document.createElement('div');
+    document.body.appendChild(blank);
+    e.dataTransfer.setDragImage(blank,0,0);
+    setTimeout(()=>document.body.removeChild(blank),0);
+    setTimeout(()=>{
+      const el=document.querySelector(`[data-idx="${idx}"]`);
+      if(el) el.classList.add('dragging');
+    },0);
   };
 
   const handleDragEnter=(idx)=>{
@@ -481,16 +510,14 @@ const busyRef      = useRef(false);
   };
 
   const handleDragEnd=()=>{
-    const from=dragSrcRef.current;
-    const to=dragOverIdx;
-    dragSrcRef.current=null;
-    setDragOverIdx(null);
+    document.querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging'));
+    const from=dragSrcRef.current, to=dragOverIdx;
+    dragSrcRef.current=null; setDragOverIdx(null);
     if(from===null||to===null||from===to) return;
     setSongs(prev=>{
       const next=[...prev];
       const [moved]=next.splice(from,1);
       next.splice(to,0,moved);
-      // Update active index to follow the moved song
       if(activeIdx===from) setActiveIdx(to);
       else if(activeIdx>from&&activeIdx<=to) setActiveIdx(i=>i-1);
       else if(activeIdx<from&&activeIdx>=to) setActiveIdx(i=>i+1);
@@ -498,31 +525,54 @@ const busyRef      = useRef(false);
     });
   };
 
-  // Touch drag support
-  const touchStartY  = useRef(0);
-  const touchSrcIdx  = useRef(null);
-
+  // ── Touch drag (handle only) ─────────────────────────────────
   const handleTouchStart=(e,idx)=>{
-    touchStartY.current=e.touches[0].clientY;
+    e.stopPropagation();
     touchSrcIdx.current=idx;
+    dragSrcRef.current=idx;
+
+    // Create floating clone
+    const src=document.querySelector(`[data-idx="${idx}"]`);
+    if(src){
+      const clone=src.cloneNode(true);
+      const rect=src.getBoundingClientRect();
+      clone.style.cssText=`
+        position:fixed;left:${rect.left}px;top:${rect.top}px;
+        width:${rect.width}px;pointer-events:none;z-index:9999;
+        border-radius:10px;transition:none;
+      `;
+      clone.classList.add('floating');
+      document.body.appendChild(clone);
+      floatRef.current={el:clone, offsetY:e.touches[0].clientY-rect.top};
+      src.classList.add('dragging');
+    }
   };
 
   const handleTouchMove=(e)=>{
     e.preventDefault();
-    const y=e.touches[0].clientY;
-    const el=document.elementFromPoint(e.touches[0].clientX, y);
+    const touch=e.touches[0];
+
+    // Move floating clone
+    if(floatRef.current){
+      floatRef.current.el.style.top=`${touch.clientY - floatRef.current.offsetY}px`;
+    }
+
+    // Find which item we're hovering over
+    const el=document.elementFromPoint(touch.clientX, touch.clientY);
     const item=el?.closest('[data-idx]');
     if(item){
       const idx=parseInt(item.dataset.idx);
-      if(!isNaN(idx)) setDragOverIdx(idx);
+      if(!isNaN(idx)&&idx!==touchSrcIdx.current) setDragOverIdx(idx);
     }
   };
 
   const handleTouchEnd=()=>{
-    const from=touchSrcIdx.current;
-    const to=dragOverIdx;
-    touchSrcIdx.current=null;
-    setDragOverIdx(null);
+    // Remove floating clone
+    if(floatRef.current){ document.body.removeChild(floatRef.current.el); floatRef.current=null; }
+    document.querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging'));
+
+    const from=touchSrcIdx.current, to=dragOverIdx;
+    touchSrcIdx.current=null; dragSrcRef.current=null; setDragOverIdx(null);
     if(from===null||to===null||from===to) return;
     setSongs(prev=>{
       const next=[...prev];
@@ -712,14 +762,9 @@ const busyRef      = useRef(false);
                       <div key={song.id}
                         data-idx={idx}
                         className={`song-item${isActive?" active":""}${dragOverIdx===idx?" drag-over":""}`}
-                        draggable
-                        onDragStart={()=>handleDragStart(idx)}
                         onDragEnter={()=>handleDragEnter(idx)}
                         onDragOver={e=>e.preventDefault()}
                         onDragEnd={handleDragEnd}
-                        onTouchStart={e=>handleTouchStart(e,idx)}
-                        onTouchMove={handleTouchMove}
-                        onTouchEnd={handleTouchEnd}
                         onClick={()=>{
                           if(!isActive){
                             stopSource(); setIsPlaying(false);
@@ -728,6 +773,14 @@ const busyRef      = useRef(false);
                           }
                         }}>
                         <div className="song-row">
+                          <div className="drag-handle"
+                            draggable
+                            onDragStart={e=>handleDragStart(e,idx)}
+                            onTouchStart={e=>handleTouchStart(e,idx)}
+                            onTouchMove={handleTouchMove}
+                            onTouchEnd={handleTouchEnd}>
+                            <span/><span/><span/>
+                          </div>
                           <div className="song-num">
                             {isActive&&isPlaying?<IconPlaySm/>:idx+1}
                           </div>
