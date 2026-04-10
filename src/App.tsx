@@ -176,7 +176,7 @@ const applyTheme=theme=>{ const r=document.documentElement; Object.entries(theme
 
 /* ─── Styles ─────────────────────────────────────────────── */
 const STYLE=`
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
 :root{
   --bg:#0c0b08;--bg2:#131108;--bg3:#1a180f;--bg4:#201e14;
@@ -188,7 +188,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;position:relative;}
 .header{flex-shrink:0;height:54px;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--bg2);position:relative;z-index:20;}
 .logo{font-size:18px;opacity:.7;}
-.header h1{font-family:'Playfair Display',serif;font-size:19px;letter-spacing:-.3px;color:var(--text);}
+.header h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;letter-spacing:-.5px;color:var(--text);}
 .header-sub{font-size:11px;color:var(--text2);font-weight:300;margin-left:2px;}
 .main{flex:1;overflow:hidden;display:flex;}
 @media(max-width:660px){.main{flex-direction:column;}}
@@ -588,7 +588,6 @@ const busyRef      = useRef(false);
       <style>{STYLE}</style>
       <div className="app">
         <header className="header">
-          <span className="logo">🎵</span>
           <h1>PitchList</h1>
           <button className="theme-btn" onClick={e=>{e.stopPropagation();setShowThemes(p=>!p)}}>
             🎨 Theme
