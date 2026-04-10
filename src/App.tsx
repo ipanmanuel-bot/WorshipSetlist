@@ -178,6 +178,10 @@ const applyTheme=theme=>{ const r=document.documentElement; Object.entries(theme
 const STYLE=`
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
+.songs-scroll,.song-item,.song-row,.drag-handle{
+  -webkit-user-select:none;
+  user-select:none;
+}
 :root{
   --bg:#0c0b08;--bg2:#131108;--bg3:#1a180f;--bg4:#201e14;
   --border:#2a2718;--border2:#3a3620;
