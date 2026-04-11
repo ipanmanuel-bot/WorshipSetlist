@@ -203,8 +203,33 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .song-count{background:var(--bg3);border:1px solid var(--border);border-radius:20px;padding:2px 8px;font-size:10px;font-family:'DM Mono',monospace;color:var(--text2);margin-left:8px;}
 .add-btn{background:var(--amber);color:#fff;border:none;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:background .15s;min-height:40px;-webkit-tap-highlight-color:transparent;}
 .add-btn:hover{background:var(--amber2);}
-.add-btn:active{transform:scale(.96);}
-.yt-input-wrap{display:flex;gap:6px;padding:8px 14px;border-bottom:1px solid var(--border);}
+.add-source-wrap{
+  display:flex;border-bottom:1px solid var(--border);
+  background:var(--bg2);flex-shrink:0;
+}
+.add-source-btn{
+  flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
+  padding:10px;font-size:12px;font-weight:500;cursor:pointer;
+  background:none;border:none;color:var(--text3);font-family:'DM Sans',sans-serif;
+  border-bottom:2px solid transparent;transition:all .15s;
+  -webkit-tap-highlight-color:transparent;
+}
+.add-source-btn.active{color:var(--amber);border-bottom-color:var(--amber);}
+.add-source-btn:hover:not(.active){color:var(--text2);}
+.add-action-wrap{
+  flex-shrink:0;padding:10px 14px;
+  border-bottom:1px solid var(--border);background:var(--bg2);
+}
+.add-full-btn{
+  width:100%;display:flex;align-items:center;justify-content:center;gap:8px;
+  background:var(--amber);color:#fff;border:none;
+  border-radius:8px;padding:10px;font-size:13px;font-weight:600;
+  cursor:pointer;font-family:'DM Sans',sans-serif;
+  transition:background .15s;-webkit-tap-highlight-color:transparent;
+}
+.add-full-btn:hover{background:var(--amber2);}
+.add-full-btn:active{transform:scale(.97);}
+.yt-input-wrap{display:flex;gap:6px;}
 .yt-input{
   flex:1;background:var(--bg3);border:1px solid var(--border2);
   color:var(--text);border-radius:8px;padding:8px 12px;
@@ -216,13 +241,13 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .yt-input:disabled{opacity:.5;}
 .yt-btn{
   flex-shrink:0;background:var(--amber);color:#fff;border:none;
-  border-radius:8px;width:36px;height:36px;cursor:pointer;
+  border-radius:8px;width:38px;height:38px;cursor:pointer;
   display:flex;align-items:center;justify-content:center;
   transition:background .15s;-webkit-tap-highlight-color:transparent;
 }
 .yt-btn:hover:not(:disabled){background:var(--amber2);}
 .yt-btn:disabled{opacity:.4;cursor:not-allowed;}
-.yt-error{font-size:11px;color:var(--red);padding:0 14px 8px;font-family:'DM Sans',sans-serif;}
+.yt-error{font-size:11px;color:var(--red);padding:6px 0 0;font-family:'DM Sans',sans-serif;}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .songs-scroll{flex:1;overflow-y:auto;padding:8px;}
 .songs-scroll::-webkit-scrollbar{width:3px;}
@@ -381,6 +406,7 @@ const busyRef      = useRef(false);
   const [ytUrl,      setYtUrl]      = useState('');
   const [ytLoading,  setYtLoading]  = useState(false);
   const [ytError,    setYtError]    = useState('');
+  const [showYt,     setShowYt]     = useState(false);
   const songsRef     = useRef(songs);
   const activeIdxRef = useRef(activeIdx);
   const isPlayingRef = useRef(isPlaying);
@@ -787,36 +813,64 @@ const busyRef      = useRef(false);
         <div className="main">
           {/* Playlist */}
           <div className="playlist-panel">
-            <div className="panel-head">
+           <div className="panel-head">
               <div style={{display:"flex",alignItems:"center"}}>
                 <span className="panel-label">Setlist</span>
                 <span className="song-count">{songs.length}</span>
               </div>
-              <button className="add-btn" onClick={()=>fileInputRef.current?.click()}>+ Add Songs</button>
-              <input ref={fileInputRef} type="file"
-                accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.mp4,.caf"
-                multiple style={{display:"none"}}
-                onChange={e=>{loadFiles(e.target.files);e.target.value="";}}/>
             </div>
 
-            <div className="yt-input-wrap">
-              <input
-                className="yt-input"
-                type="url"
-                placeholder="Paste YouTube URL…"
-                value={ytUrl}
-                disabled={ytLoading}
-                onChange={e=>{ setYtUrl(e.target.value); setYtError(''); }}
-                onKeyDown={e=>{ if(e.key==='Enter') handleYtAdd(); }}
-              />
-              <button className="yt-btn" onClick={handleYtAdd} disabled={ytLoading||!ytUrl.trim()}>
-                {ytLoading
-                  ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" style={{animation:'spin .7s linear infinite',transformOrigin:'center'}}/></svg>
-                  : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11H7.83l4.88-4.88c.39-.39.39-1.03 0-1.42-.39-.39-1.02-.39-1.41 0l-6.59 6.59c-.39.39-.39 1.02 0 1.41l6.59 6.59c.39.39 1.02.39 1.41 0 .39-.39.39-1.02 0-1.41L7.83 13H19c.55 0 1-.45 1-1s-.45-1-1-1z"/></svg>
-                }
+            {/* Add source selector */}
+            <div className="add-source-wrap">
+              <button className={`add-source-btn${!showYt?' active':''}`}
+                onClick={()=>{ setShowYt(false); setYtError(''); setYtUrl(''); }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+                Upload File
+              </button>
+              <button className={`add-source-btn${showYt?' active':''}`}
+                onClick={()=>setShowYt(true)}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 15l5.19-3L10 9v6m11.56-7.83c.13.47.22 1.1.28 1.9.07.8.1 1.49.1 2.09L22 12c0 2.19-.16 3.8-.44 4.83-.25.9-.83 1.48-1.73 1.73-.47.13-1.33.22-2.65.28-1.3.07-2.49.1-3.59.1L12 19c-4.19 0-6.8-.16-7.83-.44-.9-.25-1.48-.83-1.73-1.73-.13-.47-.22-1.1-.28-1.9-.07-.8-.1-1.49-.1-2.09L2 12c0-2.19.16-3.8.44-4.83.25-.9.83-1.48 1.73-1.73.47-.13 1.33-.22 2.65-.28 1.3-.07 2.49-.1 3.59-.1L12 5c4.19 0 6.8.16 7.83.44.9.25 1.48.83 1.73 1.73z"/></svg>
+                YouTube
               </button>
             </div>
-            {ytError && <div className="yt-error">{ytError}</div>}
+
+            {/* Upload file action */}
+            {!showYt && (
+              <div className="add-action-wrap">
+                <button className="add-full-btn" onClick={()=>fileInputRef.current?.click()}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+                  Choose Audio Files
+                </button>
+                <input ref={fileInputRef} type="file"
+                  accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.mp4,.caf"
+                  multiple style={{display:"none"}}
+                  onChange={e=>{loadFiles(e.target.files);e.target.value="";}}/>
+              </div>
+            )}
+
+            {/* YouTube URL action */}
+            {showYt && (
+              <div className="add-action-wrap">
+                <div className="yt-input-wrap">
+                  <input
+                    className="yt-input"
+                    type="url"
+                    placeholder="Paste YouTube URL…"
+                    value={ytUrl}
+                    disabled={ytLoading}
+                    onChange={e=>{ setYtUrl(e.target.value); setYtError(''); }}
+                    onKeyDown={e=>{ if(e.key==='Enter') handleYtAdd(); }}
+                  />
+                  <button className="yt-btn" onClick={handleYtAdd} disabled={ytLoading||!ytUrl.trim()}>
+                    {ytLoading
+                      ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" style={{animation:'spin .7s linear infinite',transformOrigin:'center'}}/></svg>
+                      : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11H7.83l4.88-4.88c.39-.39.39-1.03 0-1.42-.39-.39-1.02-.39-1.41 0l-6.59 6.59c-.39.39-.39 1.02 0 1.41l6.59 6.59c.39.39 1.02.39 1.41 0 .39-.39.39-1.02 0-1.41L7.83 13H19c.55 0 1-.45 1-1s-.45-1-1-1z"/></svg>
+                    }
+                  </button>
+                </div>
+                {ytError && <div className="yt-error">{ytError}</div>}
+              </div>
+            )}
             <div className="songs-scroll"
               onDragOver={e=>{e.preventDefault();setDragOver(true);}}
               onDragLeave={()=>setDragOver(false)}
