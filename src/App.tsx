@@ -26,7 +26,6 @@ function fft(re, im, inv) {
 
 /* ─── Phase Vocoder — chunked async ──────────────────────── */
 const yld = () => new Promise(r => setTimeout(r, 0));
-
 async function pvStretchAsync(audioBuffer, stretch, onProg) {
   const FFT=1024, HOP_A=256, HOP_S=Math.max(1,Math.round(HOP_A*stretch));
   const TP=2*Math.PI, HALF=FFT>>1, CHUNK=64;
@@ -73,68 +72,98 @@ const openDB=()=>new Promise((res,rej)=>{
   const req=indexedDB.open(DB_NAME,DB_VER);
   req.onupgradeneeded=e=>{
     const db=e.target.result;
-    if(!db.objectStoreNames.contains(DB_STORE))
-      db.createObjectStore(DB_STORE,{keyPath:'id'});
-    if(!db.objectStoreNames.contains(DB_CACHE))
-      db.createObjectStore(DB_CACHE,{keyPath:'key'});
+    if(!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE,{keyPath:'id'});
+    if(!db.objectStoreNames.contains(DB_CACHE)) db.createObjectStore(DB_CACHE,{keyPath:'key'});
   };
   req.onsuccess=e=>res(e.target.result);
   req.onerror=e=>rej(e.target.error);
 });
-
-const dbGetCache=async(key)=>{
-  const db=await openDB();
-  return new Promise((res,rej)=>{
-    const req=db.transaction(DB_CACHE).objectStore(DB_CACHE).get(key);
-    req.onsuccess=e=>res(e.target.result||null);
-    req.onerror=e=>rej(e.target.error);
-  });
-};
-const dbPutCache=async(key,arrayBuffer)=>{
-  const db=await openDB();
-  return new Promise((res,rej)=>{
-    const req=db.transaction(DB_CACHE,'readwrite').objectStore(DB_CACHE).put({key,arrayBuffer});
-    req.onsuccess=()=>res();
-    req.onerror=e=>rej(e.target.error);
-  });
-};
-const dbDeleteCache=async(songId)=>{
-  // Delete all cached buffers for a song when it's removed
-  const db=await openDB();
-  const store=db.transaction(DB_CACHE,'readwrite').objectStore(DB_CACHE);
-  return new Promise((res,rej)=>{
-    const req=store.getAllKeys();
-    req.onsuccess=e=>{
-      const keys=e.target.result.filter(k=>k.startsWith(songId+'-'));
-      keys.forEach(k=>store.delete(k));
-      res();
-    };
-    req.onerror=e=>rej(e.target.error);
-  });
-};
 const dbGetAll=async()=>{
   const db=await openDB();
   return new Promise((res,rej)=>{
     const req=db.transaction(DB_STORE).objectStore(DB_STORE).getAll();
-    req.onsuccess=e=>res(e.target.result);
-    req.onerror=e=>rej(e.target.error);
+    req.onsuccess=e=>res(e.target.result); req.onerror=e=>rej(e.target.error);
   });
 };
 const dbPut=async(record)=>{
   const db=await openDB();
   return new Promise((res,rej)=>{
     const req=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).put(record);
-    req.onsuccess=()=>res();
-    req.onerror=e=>rej(e.target.error);
+    req.onsuccess=()=>res(); req.onerror=e=>rej(e.target.error);
   });
 };
 const dbDelete=async(id)=>{
   const db=await openDB();
   return new Promise((res,rej)=>{
     const req=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).delete(id);
-    req.onsuccess=()=>res();
+    req.onsuccess=()=>res(); req.onerror=e=>rej(e.target.error);
+  });
+};
+const dbGetCache=async(key)=>{
+  const db=await openDB();
+  return new Promise((res,rej)=>{
+    const req=db.transaction(DB_CACHE).objectStore(DB_CACHE).get(key);
+    req.onsuccess=e=>res(e.target.result||null); req.onerror=e=>rej(e.target.error);
+  });
+};
+const dbPutCache=async(key,arrayBuffer)=>{
+  const db=await openDB();
+  return new Promise((res,rej)=>{
+    const req=db.transaction(DB_CACHE,'readwrite').objectStore(DB_CACHE).put({key,arrayBuffer});
+    req.onsuccess=()=>res(); req.onerror=e=>rej(e.target.error);
+  });
+};
+const dbDeleteCache=async(songId)=>{
+  const db=await openDB();
+  const store=db.transaction(DB_CACHE,'readwrite').objectStore(DB_CACHE);
+  return new Promise((res,rej)=>{
+    const req=store.getAllKeys();
+    req.onsuccess=e=>{ e.target.result.filter(k=>k.startsWith(songId+'-')).forEach(k=>store.delete(k)); res(); };
     req.onerror=e=>rej(e.target.error);
   });
+};
+
+/* ─── MP3 export via lamejs (loaded dynamically) ─────────── */
+const loadLame=()=>new Promise(resolve=>{
+  if(window.lamejs){ resolve(window.lamejs); return; }
+  const s=document.createElement('script');
+  s.src='https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js';
+  s.onload=()=>resolve(window.lamejs);
+  document.head.appendChild(s);
+});
+
+const exportMp3=async(audioBuffer, filename)=>{
+  const lamejs=await loadLame();
+  const numCh=audioBuffer.numberOfChannels;
+  const sr=audioBuffer.sampleRate;
+  const left=audioBuffer.getChannelData(0);
+  const right=numCh>1?audioBuffer.getChannelData(1):left;
+
+  const mp3enc=new lamejs.Mp3Encoder(numCh,sr,128);
+  const CHUNK=1152;
+  const mp3Data=[];
+
+  const toInt16=f=>{ const v=Math.max(-1,Math.min(1,f)); return v<0?v*0x8000:v*0x7FFF; };
+
+  for(let i=0;i<left.length;i+=CHUNK){
+    const lChunk=new Int16Array(Math.min(CHUNK,left.length-i));
+    const rChunk=new Int16Array(Math.min(CHUNK,right.length-i));
+    for(let j=0;j<lChunk.length;j++){
+      lChunk[j]=toInt16(left[i+j]);
+      rChunk[j]=toInt16(right[i+j]);
+    }
+    const encoded=numCh>1?mp3enc.encodeBuffer(lChunk,rChunk):mp3enc.encodeBuffer(lChunk);
+    if(encoded.length>0) mp3Data.push(encoded);
+  }
+  const flushed=mp3enc.flush();
+  if(flushed.length>0) mp3Data.push(flushed);
+
+  const blob=new Blob(mp3Data,{type:'audio/mp3'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=`${filename}.mp3`;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); },1000);
 };
 
 /* ─── Themes ─────────────────────────────────────────────── */
@@ -178,22 +207,16 @@ const applyTheme=theme=>{ const r=document.documentElement; Object.entries(theme
 const STYLE=`
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
-.songs-scroll,.song-item,.song-row,.drag-handle{
-  -webkit-user-select:none;
-  user-select:none;
-}
 :root{
-  --bg:#0c0b08;--bg2:#131108;--bg3:#1a180f;--bg4:#201e14;
-  --border:#2a2718;--border2:#3a3620;
-  --text:#f2ead8;--text2:#8a8070;--text3:#5a5448;
-  --amber:#d4881a;--amber2:#f0a030;--amber3:#ffc060;--red:#c0392b;
+  --bg:#060d12;--bg2:#0b1520;--bg3:#101e2a;--bg4:#162535;
+  --border:#1a2e3d;--border2:#1f3a4f;
+  --text:#d4eaf7;--text2:#6a90a8;--text3:#3a5a6a;
+  --amber:#1a8fc0;--amber2:#25aae0;--amber3:#60ccff;--red:#e05555;
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;}
 .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;position:relative;}
 .header{flex-shrink:0;height:54px;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--bg2);position:relative;z-index:20;}
-.logo{font-size:18px;opacity:.7;}
 .header h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:600;letter-spacing:-.5px;color:var(--text);}
-.header-sub{font-size:11px;color:var(--text2);font-weight:300;margin-left:2px;}
 .main{flex:1;overflow:hidden;display:flex;}
 @media(max-width:660px){.main{flex-direction:column;}}
 .playlist-panel{flex:1;display:flex;flex-direction:column;border-right:1px solid var(--border);overflow:hidden;min-width:0;}
@@ -207,9 +230,17 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .songs-scroll{flex:1;overflow-y:auto;padding:8px;}
 .songs-scroll::-webkit-scrollbar{width:3px;}
 .songs-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+.songs-scroll,.song-item,.song-row,.drag-handle{-webkit-user-select:none;user-select:none;}
 .song-item{background:var(--bg2);border:1px solid var(--border);border-radius:10px;margin-bottom:6px;cursor:pointer;transition:border-color .15s;overflow:hidden;-webkit-tap-highlight-color:transparent;}
 .song-item:hover{border-color:var(--border2);}
 .song-item.active{border-color:var(--amber);background:var(--bg3);}
+.song-item.drag-over{border-color:var(--amber2) !important;background:var(--bg4) !important;}
+.song-item.dragging{opacity:.4;}
+.song-item.floating{opacity:1 !important;border-color:var(--amber) !important;box-shadow:0 12px 40px rgba(0,0,0,.5);transform:scale(1.03) rotate(0.8deg);z-index:999;pointer-events:none;}
+.drag-handle{display:flex;flex-direction:column;justify-content:center;gap:3px;padding:8px 6px 8px 2px;cursor:grab;flex-shrink:0;opacity:.35;transition:opacity .15s;touch-action:none;}
+.drag-handle:active{cursor:grabbing;}
+.song-item:hover .drag-handle{opacity:.7;}
+.drag-handle span{display:block;width:14px;height:1.5px;background:var(--text);border-radius:2px;}
 .song-row{display:flex;align-items:center;gap:10px;padding:11px 12px;min-height:50px;}
 .song-num{width:28px;height:28px;border-radius:50%;flex-shrink:0;background:var(--bg3);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);transition:all .15s;}
 .song-item.active .song-num{background:var(--amber);border-color:var(--amber);color:#fff;}
@@ -221,25 +252,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .song-item:hover .song-del{opacity:1;}
 @media(max-width:660px){.song-del{opacity:.45;}}
 .song-del:hover{color:var(--red);}
-.song-item.drag-over{border-color:var(--amber2) !important;background:var(--bg4) !important;}
-.song-item.dragging{opacity:.4;}
-.song-item.floating{
-  opacity:1 !important;border-color:var(--amber) !important;
-  box-shadow:0 12px 40px rgba(0,0,0,.5);
-  transform:scale(1.03) rotate(0.8deg);
-  z-index:999;pointer-events:none;
-}
-.drag-handle{
-  display:flex;flex-direction:column;justify-content:center;gap:3px;
-  padding:8px 6px 8px 2px;cursor:grab;flex-shrink:0;opacity:.35;
-  transition:opacity .15s;touch-action:none;
-}
-.drag-handle:active{cursor:grabbing;}
-.song-item:hover .drag-handle{opacity:.7;}
-.drag-handle span{
-  display:block;width:14px;height:1.5px;
-  background:var(--text);border-radius:2px;
-}
 .song-controls{padding:0 12px 12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;}
 .ctrl-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;}
 .ctrl-title{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:6px;font-weight:600;}
@@ -250,18 +262,15 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .c-btn:hover{background:var(--amber);border-color:var(--amber);color:#fff;}
 .c-btn:active{transform:scale(.92);}
 .tempo-slider{width:100%;accent-color:var(--amber);cursor:pointer;margin-top:8px;height:4px;display:block;}
-.play-now-btn{
-  grid-column:1/-1;width:100%;margin-top:2px;
-  background:var(--amber);color:#fff;border:none;
-  border-radius:8px;padding:10px;font-size:13px;font-weight:600;
-  cursor:pointer;font-family:'DM Sans',sans-serif;
-  display:flex;align-items:center;justify-content:center;gap:8px;
-  transition:background .15s;min-height:42px;
-  -webkit-tap-highlight-color:transparent;
-}
+.song-actions{grid-column:1/-1;display:flex;gap:8px;margin-top:2px;}
+.play-now-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--amber);color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:background .15s;min-height:42px;-webkit-tap-highlight-color:transparent;}
 .play-now-btn:hover:not(:disabled){background:var(--amber2);}
 .play-now-btn:active:not(:disabled){transform:scale(.97);}
 .play-now-btn:disabled{opacity:.5;cursor:not-allowed;}
+.export-btn{display:flex;align-items:center;justify-content:center;gap:6px;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:10px 14px;font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;min-height:42px;white-space:nowrap;-webkit-tap-highlight-color:transparent;}
+.export-btn:hover:not(:disabled){border-color:var(--amber);color:var(--amber);}
+.export-btn:active:not(:disabled){transform:scale(.97);}
+.export-btn:disabled{opacity:.4;cursor:not-allowed;}
 .drop-zone{margin:8px;border:1px dashed var(--border2);border-radius:10px;padding:22px 14px;text-align:center;color:var(--text3);transition:all .2s;cursor:pointer;}
 .drop-zone.over{border-color:var(--amber);color:var(--amber);background:rgba(212,136,26,.05);}
 .drop-icon{font-size:24px;opacity:.4;margin-bottom:6px;}
@@ -275,7 +284,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .pl-footer{padding:7px 14px;border-top:1px solid var(--border);font-size:10px;color:var(--text3);font-family:'DM Mono',monospace;background:var(--bg);display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .clear-btn{background:none;border:1px solid var(--border2);color:var(--red);border-radius:6px;padding:4px 10px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;transition:all .15s;white-space:nowrap;-webkit-tap-highlight-color:transparent;}
 .clear-btn:hover{background:var(--red);color:#fff;border-color:var(--red);}
-.clear-btn:active{transform:scale(.95);}.player-panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;background:var(--bg2);overflow:hidden;}
+.clear-btn:active{transform:scale(.95);}
+.player-panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;background:var(--bg2);overflow:hidden;}
 @media(max-width:660px){.player-panel{width:100%;flex-shrink:0;border-top:1px solid var(--border);}}
 .now-playing{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px 16px 8px;gap:4px;text-align:center;}
 @media(max-width:660px){.now-playing{flex-direction:row;text-align:left;align-items:center;padding:12px 16px;gap:14px;flex:none;}}
@@ -288,21 +298,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 @media(max-width:660px){.vinyl-label{width:17px;height:17px;font-size:8px;}}
 .np-info{display:flex;flex-direction:column;gap:3px;min-width:0;}
 .np-eyebrow{font-size:9px;letter-spacing:2.5px;text-transform:uppercase;color:var(--amber);font-weight:600;}
-.np-title{font-family:'Playfair Display',serif;font-size:17px;line-height:1.3;}
+.np-title{font-family:'Syne',serif;font-size:17px;line-height:1.3;}
 .np-empty{color:var(--text3);font-size:12px;font-style:italic;}
 .np-badges{display:flex;gap:5px;margin-top:3px;flex-wrap:wrap;}
 .np-badge{padding:3px 9px;border-radius:20px;background:var(--bg3);border:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--amber2);}
 .progress-wrap{padding:5px 16px;}
 .prog-bar{background:var(--bg3);border-radius:3px;height:4px;cursor:pointer;position:relative;margin-bottom:5px;-webkit-tap-highlight-color:transparent;}
 .prog-fill{background:linear-gradient(90deg,var(--amber),var(--amber2));height:100%;border-radius:3px;pointer-events:none;}
-.prog-bar{position:relative;}
-.prog-thumb{
-  position:absolute;top:50%;transform:translate(-50%,-50%);
-  width:16px;height:16px;border-radius:50%;
-  background:var(--amber2);border:2px solid var(--bg2);
-  box-shadow:0 1px 6px rgba(0,0,0,.4);
-  pointer-events:none;transition:transform .1s;
-}
+.prog-thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:50%;background:var(--amber2);border:2px solid var(--bg2);box-shadow:0 1px 6px rgba(0,0,0,.4);pointer-events:none;transition:transform .1s;}
 .prog-bar:hover .prog-thumb,.prog-bar:active .prog-thumb{transform:translate(-50%,-50%) scale(1.3);}
 .prog-times{display:flex;justify-content:space-between;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);}
 .transport{padding:8px 16px 16px;display:flex;align-items:center;justify-content:center;gap:10px;}
@@ -323,17 +326,18 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .theme-option:hover{background:var(--bg3);}
 .theme-option.active{color:var(--amber);font-weight:600;}
 .theme-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 `;
 
 const fmt=s=>!s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
 const pitchLabel=s=>s===0?"±0":s>0?`+${s}`:`${s}`;
 
-/* ─── SVG Icons ───────────────────────────────────────────── */
 const IconPrev=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>;
 const IconNext=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm2.5-6 5.5 3.9V8.1L8.5 12zM16 6h2v12h-2z"/></svg>;
 const IconPlay=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
 const IconPause=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>;
 const IconPlaySm=()=><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
+const IconExport=()=><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg>;
 
 export default function WorshipSetlist() {
   const [songs,      setSongs]      = useState([]);
@@ -346,6 +350,8 @@ export default function WorshipSetlist() {
   const [dragOver,   setDragOver]   = useState(false);
   const [themeId,    setThemeId]    = useState(getSavedTheme);
   const [showThemes, setShowThemes] = useState(false);
+  const [dragOverIdx,setDragOverIdx]= useState(null);
+  const [exporting,  setExporting]  = useState(null); // song id being exported
 
   const fileInputRef = useRef(null);
   const actxRef      = useRef(null);
@@ -355,9 +361,11 @@ export default function WorshipSetlist() {
   const rafRef       = useRef(null);
   const durationRef  = useRef(0);
   const genRef       = useRef(0);
-const busyRef      = useRef(false);
+  const busyRef      = useRef(false);
   const dragSrcRef   = useRef(null);
-  const [dragOverIdx, setDragOverIdx] = useState(null);
+  const floatRef     = useRef(null);
+  const touchSrcIdx  = useRef(null);
+
   const songsRef     = useRef(songs);
   const activeIdxRef = useRef(activeIdx);
   const isPlayingRef = useRef(isPlaying);
@@ -374,12 +382,12 @@ const busyRef      = useRef(false);
   // Close theme dropdown on outside click
   useEffect(()=>{
     if(!showThemes) return;
-    const handler=()=>setShowThemes(false);
-    setTimeout(()=>document.addEventListener('click',handler),0);
-    return ()=>document.removeEventListener('click',handler);
+    const h=()=>setShowThemes(false);
+    setTimeout(()=>document.addEventListener('click',h),0);
+    return ()=>document.removeEventListener('click',h);
   },[showThemes]);
 
-  // Load persisted songs from IndexedDB on first mount
+  // Load persisted songs on first mount
   useEffect(()=>{
     (async()=>{
       try{
@@ -391,11 +399,9 @@ const busyRef      = useRef(false);
           return{id:s.id,name:s.name,audioBuffer,pitch:s.pitch,tempo:s.tempo,
             cachedBuffer:null,cachedPitch:null,cachedTempo:null};
         }));
-        restored.sort((a,b)=>{
-          return saved.findIndex(s=>s.id===a.id)-saved.findIndex(s=>s.id===b.id);
-        });
+        restored.sort((a,b)=>saved.findIndex(s=>s.id===a.id)-saved.findIndex(s=>s.id===b.id));
         setSongs(restored);
-      }catch(e){ console.error('Failed to restore songs:',e); }
+      }catch(e){ console.error('Restore failed:',e); }
     })();
   },[]);
 
@@ -410,17 +416,30 @@ const busyRef      = useRef(false);
     if(rafRef.current) cancelAnimationFrame(rafRef.current);
   };
 
+  const audioBufferToArrayBuffer=(audioBuffer)=>{
+    const numCh=audioBuffer.numberOfChannels, len=audioBuffer.length, sr=audioBuffer.sampleRate;
+    const ab=new ArrayBuffer(44+len*numCh*2), view=new DataView(ab);
+    const ws=(off,str)=>{for(let i=0;i<str.length;i++)view.setUint8(off+i,str.charCodeAt(i));};
+    ws(0,'RIFF'); view.setUint32(4,36+len*numCh*2,true);
+    ws(8,'WAVE'); ws(12,'fmt '); view.setUint32(16,16,true);
+    view.setUint16(20,1,true); view.setUint16(22,numCh,true);
+    view.setUint32(24,sr,true); view.setUint32(28,sr*numCh*2,true);
+    view.setUint16(32,numCh*2,true); view.setUint16(34,16,true);
+    ws(36,'data'); view.setUint32(40,len*numCh*2,true);
+    let off=44;
+    for(let i=0;i<len;i++) for(let c=0;c<numCh;c++){
+      const v=Math.max(-1,Math.min(1,audioBuffer.getChannelData(c)[i]));
+      view.setInt16(off,v<0?v*0x8000:v*0x7FFF,true); off+=2;
+    }
+    return ab;
+  };
+
   const getProcessedBuffer=useCallback(async(song)=>{
-    // 1. In-memory cache hit (fastest)
     if(song.cachedBuffer&&song.cachedPitch===song.pitch&&song.cachedTempo===song.tempo)
       return song.cachedBuffer;
-
-    // 2. No processing needed
     if(song.pitch===0&&song.tempo===100) return song.audioBuffer;
 
     const cacheKey=`${song.id}-${song.pitch}-${song.tempo}`;
-
-    // 3. IndexedDB cache hit — load and decode, skip processing entirely
     try{
       const cached=await dbGetCache(cacheKey);
       if(cached){
@@ -432,7 +451,6 @@ const busyRef      = useRef(false);
       }
     }catch(e){ console.warn('Cache read failed:',e); }
 
-    // 4. Process from scratch
     const ab=song.audioBuffer, numCh=ab.numberOfChannels;
     const pitchFactor=Math.pow(2,song.pitch/12), tempoFactor=song.tempo/100;
     setProcPct(0);
@@ -448,7 +466,6 @@ const busyRef      = useRef(false);
     const rendered=await offCtx.startRendering();
     setProcPct(1);
 
-    // 5. Save to IndexedDB cache for next time
     try{
       const arrayBuffer=audioBufferToArrayBuffer(rendered);
       dbPutCache(cacheKey,arrayBuffer).catch(()=>{});
@@ -462,7 +479,8 @@ const busyRef      = useRef(false);
   const playFrom=useCallback(async(idx,offset=0)=>{
     if(busyRef.current) return;
     busyRef.current=true;
-    const song=songsRef.current[idx]; if(!song){ busyRef.current=false; return; }
+    const song=songsRef.current[idx];
+    if(!song){ busyRef.current=false; return; }
     setProcessing(true); stopSource();
     const ctx=getCtx(); if(ctx.state==="suspended") await ctx.resume();
     try{
@@ -491,103 +509,6 @@ const busyRef      = useRef(false);
     finally{setProcessing(false);setProcPct(0);busyRef.current=false;}
   },[getProcessedBuffer]);
 
-  const floatRef     = useRef(null); // cloned floating element
-  const touchSrcIdx  = useRef(null);
-
-  // ── Desktop drag ────────────────────────────────────────────
-  const handleDragStart=(e,idx)=>{
-    dragSrcRef.current=idx;
-    // Transparent drag image so we show .dragging class instead
-    const blank=document.createElement('div');
-    document.body.appendChild(blank);
-    e.dataTransfer.setDragImage(blank,0,0);
-    setTimeout(()=>document.body.removeChild(blank),0);
-    setTimeout(()=>{
-      const el=document.querySelector(`[data-idx="${idx}"]`);
-      if(el) el.classList.add('dragging');
-    },0);
-  };
-
-  const handleDragEnter=(idx)=>{
-    if(dragSrcRef.current===null||dragSrcRef.current===idx) return;
-    setDragOverIdx(idx);
-  };
-
-  const handleDragEnd=()=>{
-    document.querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging'));
-    const from=dragSrcRef.current, to=dragOverIdx;
-    dragSrcRef.current=null; setDragOverIdx(null);
-    if(from===null||to===null||from===to) return;
-    setSongs(prev=>{
-      const next=[...prev];
-      const [moved]=next.splice(from,1);
-      next.splice(to,0,moved);
-      if(activeIdx===from) setActiveIdx(to);
-      else if(activeIdx>from&&activeIdx<=to) setActiveIdx(i=>i-1);
-      else if(activeIdx<from&&activeIdx>=to) setActiveIdx(i=>i+1);
-      return next;
-    });
-  };
-
-  // ── Touch drag (handle only) ─────────────────────────────────
-  const handleTouchStart=(e,idx)=>{
-    e.stopPropagation();
-    touchSrcIdx.current=idx;
-    dragSrcRef.current=idx;
-
-    // Create floating clone
-    const src=document.querySelector(`[data-idx="${idx}"]`);
-    if(src){
-      const clone=src.cloneNode(true);
-      const rect=src.getBoundingClientRect();
-      clone.style.cssText=`
-        position:fixed;left:${rect.left}px;top:${rect.top}px;
-        width:${rect.width}px;pointer-events:none;z-index:9999;
-        border-radius:10px;transition:none;
-      `;
-      clone.classList.add('floating');
-      document.body.appendChild(clone);
-      floatRef.current={el:clone, offsetY:e.touches[0].clientY-rect.top};
-      src.classList.add('dragging');
-    }
-  };
-
-  const handleTouchMove=(e)=>{
-    e.preventDefault();
-    const touch=e.touches[0];
-
-    // Move floating clone
-    if(floatRef.current){
-      floatRef.current.el.style.top=`${touch.clientY - floatRef.current.offsetY}px`;
-    }
-
-    // Find which item we're hovering over
-    const el=document.elementFromPoint(touch.clientX, touch.clientY);
-    const item=el?.closest('[data-idx]');
-    if(item){
-      const idx=parseInt(item.dataset.idx);
-      if(!isNaN(idx)&&idx!==touchSrcIdx.current) setDragOverIdx(idx);
-    }
-  };
-
-  const handleTouchEnd=()=>{
-    // Remove floating clone
-    if(floatRef.current){ document.body.removeChild(floatRef.current.el); floatRef.current=null; }
-    document.querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging'));
-
-    const from=touchSrcIdx.current, to=dragOverIdx;
-    touchSrcIdx.current=null; dragSrcRef.current=null; setDragOverIdx(null);
-    if(from===null||to===null||from===to) return;
-    setSongs(prev=>{
-      const next=[...prev];
-      const [moved]=next.splice(from,1);
-      next.splice(to,0,moved);
-      if(activeIdx===from) setActiveIdx(to);
-      else if(activeIdx>from&&activeIdx<=to) setActiveIdx(i=>i-1);
-      else if(activeIdx<from&&activeIdx>=to) setActiveIdx(i=>i+1);
-      return next;
-    });
-  };
   const handlePlayPause=()=>{
     if(processing) return;
     const ctx=getCtx();
@@ -611,34 +532,101 @@ const busyRef      = useRef(false);
     if(activeIdx===null||duration===0) return;
     e.preventDefault();
     const bar=e.currentTarget;
-
-    // Pause playback while scrubbing
     const wasPlaying=isPlayingRef.current;
     if(wasPlaying){ stopSource(); setIsPlaying(false); }
-
-    const getClientX=ev=>ev.touches?ev.touches[0].clientX:ev.clientX;
-
+    const getX=ev=>ev.touches?ev.touches[0].clientX:ev.clientX;
     const onMove=ev=>{
       const rect=bar.getBoundingClientRect();
-      const ratio=Math.max(0,Math.min(1,(getClientX(ev)-rect.left)/rect.width));
-      const seekTo=ratio*duration;
-      pausedAtRef.current=seekTo;
-      setProgress(seekTo);
+      const ratio=Math.max(0,Math.min(1,(getX(ev)-rect.left)/rect.width));
+      pausedAtRef.current=ratio*duration; setProgress(ratio*duration);
     };
-
     const onUp=()=>{
       document.removeEventListener('mousemove',onMove);
       document.removeEventListener('mouseup',onUp);
       document.removeEventListener('touchmove',onMove);
       document.removeEventListener('touchend',onUp);
-      // Resume only if was playing before scrub
       if(wasPlaying) playFrom(activeIdx,pausedAtRef.current);
     };
-
     document.addEventListener('mousemove',onMove);
     document.addEventListener('mouseup',onUp);
     document.addEventListener('touchmove',onMove,{passive:false});
     document.addEventListener('touchend',onUp);
+  };
+
+  // Drag to reorder
+  const handleDragStart=(e,idx)=>{
+    dragSrcRef.current=idx;
+    const blank=document.createElement('div');
+    document.body.appendChild(blank);
+    e.dataTransfer.setDragImage(blank,0,0);
+    setTimeout(()=>document.body.removeChild(blank),0);
+    setTimeout(()=>{ const el=document.querySelector(`[data-idx="${idx}"]`); if(el) el.classList.add('dragging'); },0);
+  };
+  const handleDragEnter=(idx)=>{
+    if(dragSrcRef.current===null||dragSrcRef.current===idx) return;
+    setDragOverIdx(idx);
+  };
+  const handleDragEnd=()=>{
+    document.querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging'));
+    const from=dragSrcRef.current, to=dragOverIdx;
+    dragSrcRef.current=null; setDragOverIdx(null);
+    if(from===null||to===null||from===to) return;
+    setSongs(prev=>{
+      const next=[...prev]; const [moved]=next.splice(from,1); next.splice(to,0,moved);
+      if(activeIdx===from) setActiveIdx(to);
+      else if(activeIdx>from&&activeIdx<=to) setActiveIdx(i=>i-1);
+      else if(activeIdx<from&&activeIdx>=to) setActiveIdx(i=>i+1);
+      return next;
+    });
+  };
+  const handleTouchStart=(e,idx)=>{
+    e.stopPropagation(); touchSrcIdx.current=idx; dragSrcRef.current=idx;
+    const src=document.querySelector(`[data-idx="${idx}"]`);
+    if(src){
+      const clone=src.cloneNode(true);
+      const rect=src.getBoundingClientRect();
+      clone.style.cssText=`position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;pointer-events:none;z-index:9999;border-radius:10px;transition:none;`;
+      clone.classList.add('floating');
+      document.body.appendChild(clone);
+      floatRef.current={el:clone,offsetY:e.touches[0].clientY-rect.top};
+      src.classList.add('dragging');
+    }
+  };
+  const handleTouchMove=(e)=>{
+    e.preventDefault();
+    const touch=e.touches[0];
+    if(floatRef.current) floatRef.current.el.style.top=`${touch.clientY-floatRef.current.offsetY}px`;
+    const el=document.elementFromPoint(touch.clientX,touch.clientY);
+    const item=el?.closest('[data-idx]');
+    if(item){ const idx=parseInt(item.dataset.idx); if(!isNaN(idx)&&idx!==touchSrcIdx.current) setDragOverIdx(idx); }
+  };
+  const handleTouchEnd=()=>{
+    if(floatRef.current){ document.body.removeChild(floatRef.current.el); floatRef.current=null; }
+    document.querySelectorAll('.dragging').forEach(el=>el.classList.remove('dragging'));
+    const from=touchSrcIdx.current, to=dragOverIdx;
+    touchSrcIdx.current=null; dragSrcRef.current=null; setDragOverIdx(null);
+    if(from===null||to===null||from===to) return;
+    setSongs(prev=>{
+      const next=[...prev]; const [moved]=next.splice(from,1); next.splice(to,0,moved);
+      if(activeIdx===from) setActiveIdx(to);
+      else if(activeIdx>from&&activeIdx<=to) setActiveIdx(i=>i-1);
+      else if(activeIdx<from&&activeIdx>=to) setActiveIdx(i=>i+1);
+      return next;
+    });
+  };
+
+  // Export MP3
+  const handleExport=async(e,song)=>{
+    e.stopPropagation();
+    setExporting(song.id);
+    try{
+      const buffer=await getProcessedBuffer(song);
+      const label=pitchLabel(song.pitch)==='±0'&&song.tempo===100
+        ?song.name
+        :`${song.name} (${pitchLabel(song.pitch)}st ${song.tempo}%)`;
+      await exportMp3(buffer,label);
+    }catch(err){ console.error('Export failed:',err); alert('Export failed: '+err.message); }
+    finally{ setExporting(null); }
   };
 
   const updateSong=(id,key,val)=>setSongs(prev=>prev.map(s=>{
@@ -647,30 +635,10 @@ const busyRef      = useRef(false);
     openDB().then(db=>{
       const store=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE);
       const req=store.get(id);
-      req.onsuccess=e=>{
-        if(e.target.result) store.put({...e.target.result,pitch:updated.pitch,tempo:updated.tempo});
-      };
+      req.onsuccess=e=>{ if(e.target.result) store.put({...e.target.result,pitch:updated.pitch,tempo:updated.tempo}); };
     }).catch(()=>{});
     return updated;
   }));
-
-  const audioBufferToArrayBuffer=(audioBuffer)=>{
-    const numCh=audioBuffer.numberOfChannels, len=audioBuffer.length, sr=audioBuffer.sampleRate;
-    const ab=new ArrayBuffer(44+len*numCh*2), view=new DataView(ab);
-    const ws=(off,str)=>{for(let i=0;i<str.length;i++)view.setUint8(off+i,str.charCodeAt(i));};
-    ws(0,'RIFF'); view.setUint32(4,36+len*numCh*2,true);
-    ws(8,'WAVE'); ws(12,'fmt '); view.setUint32(16,16,true);
-    view.setUint16(20,1,true); view.setUint16(22,numCh,true);
-    view.setUint32(24,sr,true); view.setUint32(28,sr*numCh*2,true);
-    view.setUint16(32,numCh*2,true); view.setUint16(34,16,true);
-    ws(36,'data'); view.setUint32(40,len*numCh*2,true);
-    let off=44;
-    for(let i=0;i<len;i++) for(let c=0;c<numCh;c++){
-      const v=Math.max(-1,Math.min(1,audioBuffer.getChannelData(c)[i]));
-      view.setInt16(off,v<0?v*0x8000:v*0x7FFF,true); off+=2;
-    }
-    return ab;
-  };
 
   const loadFiles=async files=>{
     const ctx=getCtx();
@@ -769,9 +737,7 @@ const busyRef      = useRef(false);
                         onDragEnter={()=>handleDragEnter(idx)}
                         onDragOver={e=>e.preventDefault()}
                         onDragEnd={handleDragEnd}
-                        onClick={()=>{
-                          setActiveIdx(isActive ? null : idx);
-                        }}>
+                        onClick={()=>setActiveIdx(isActive?null:idx)}>
                         <div className="song-row">
                           <div className="drag-handle"
                             draggable
@@ -781,9 +747,7 @@ const busyRef      = useRef(false);
                             onTouchEnd={handleTouchEnd}>
                             <span/><span/><span/>
                           </div>
-                          <div className="song-num">
-                            {isActive&&isPlaying?<IconPlaySm/>:idx+1}
-                          </div>
+                          <div className="song-num">{isActive&&isPlaying?<IconPlaySm/>:idx+1}</div>
                           <span className="song-name" title={song.name}>{song.name}</span>
                           <div className="song-badges">
                             <span className={`badge${song.pitch===0?" neutral":""}`}>{pitchLabel(song.pitch)}st</span>
@@ -824,12 +788,23 @@ const busyRef      = useRef(false);
                                 min={50} max={150} value={song.tempo}
                                 onChange={e=>updateSong(song.id,"tempo",Number(e.target.value))}/>
                             </div>
-                            <button className="play-now-btn"
-                              disabled={processing}
-                              onClick={e=>{e.stopPropagation();pausedAtRef.current=0;playFrom(idx,0);}}>
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                              {processing&&activeIdx===idx ? `Processing… ${Math.round(procPct*100)}%` : 'Play'}
-                            </button>
+                            <div className="song-actions">
+                              <button className="play-now-btn"
+                                disabled={processing}
+                                onClick={e=>{e.stopPropagation();pausedAtRef.current=0;playFrom(idx,0);}}>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                                {processing&&activeIdx===idx?`Processing… ${Math.round(procPct*100)}%`:'Play'}
+                              </button>
+                             <button className="export-btn"
+                                disabled={exporting===song.id||!(song.cachedBuffer&&song.cachedPitch===song.pitch&&song.cachedTempo===song.tempo)&&!(song.pitch===0&&song.tempo===100)}
+                                onClick={e=>handleExport(e,song)}>
+                                {exporting===song.id
+                                  ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" style={{animation:'spin .7s linear infinite',transformOrigin:'center'}}/></svg>
+                                  : <IconExport/>
+                                }
+                                {exporting===song.id?'Exporting…':'Export MP3'}
+                              </button>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -843,9 +818,10 @@ const busyRef      = useRef(false);
                 </>
               )}
             </div>
+
             <div className="pl-footer-wrap">
               <div className="pl-banner">
-                <span className="pl-banner-text">Enjoying PitchList?</span>
+                <span className="pl-banner-text">Enjoying PitchList? Follow us!</span>
                 <div className="pl-banner-links">
                   <a href="https://www.instagram.com/ipanmanuel" target="_blank" rel="noopener noreferrer" className="pl-social-btn">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="0.5" fill="currentColor"/></svg>
@@ -856,18 +832,15 @@ const busyRef      = useRef(false);
                 </div>
               </div>
               <div className="pl-footer">
-                <span>{songs.length>0?`${songs.length} song${songs.length!==1?"s":""} · tap to play & adjust`:"no songs loaded"}</span>
+                <span>{songs.length>0?`${songs.length} song${songs.length!==1?"s":""} · tap to select & adjust`:"no songs loaded"}</span>
                 {songs.length>0&&(
-                  <button className="clear-btn"
-                    onClick={()=>{
-                      if(!window.confirm('Clear all songs from the setlist?')) return;
-                      stopSource(); setIsPlaying(false); setActiveIdx(null);
-                      setProgress(0); setDuration(0); pausedAtRef.current=0;
-                      songs.forEach(s=>{ dbDelete(s.id).catch(()=>{}); dbDeleteCache(s.id).catch(()=>{}); });
-                      setSongs([]);
-                    }}>
-                    Clear Setlist
-                  </button>
+                  <button className="clear-btn" onClick={()=>{
+                    if(!window.confirm('Clear all songs from the setlist?')) return;
+                    stopSource(); setIsPlaying(false); setActiveIdx(null);
+                    setProgress(0); setDuration(0); pausedAtRef.current=0;
+                    songs.forEach(s=>{ dbDelete(s.id).catch(()=>{}); dbDeleteCache(s.id).catch(()=>{}); });
+                    setSongs([]);
+                  }}>Clear Setlist</button>
                 )}
               </div>
             </div>
@@ -891,7 +864,8 @@ const busyRef      = useRef(false);
                 </div>
               ):(
                 <div className="np-info">
-                  <p className="np-empty">{songs.length===0?"Add songs to get started":"Tap a song to play"}</p>
+                  <div className="np-eyebrow">PitchList</div>
+                  <p className="np-empty">{songs.length===0?"Add songs to get started":"Tap a song to select"}</p>
                 </div>
               )}
             </div>
@@ -915,17 +889,13 @@ const busyRef      = useRef(false);
             </div>
 
             <div className="transport">
-              <button className="t-btn" onClick={handlePrev} disabled={!currentSong||activeIdx===0}>
-                <IconPrev/>
-              </button>
+              <button className="t-btn" onClick={handlePrev} disabled={!currentSong||activeIdx===0}><IconPrev/></button>
               <button className="t-btn play-btn"
                 onClick={songs.length>0?handlePlayPause:undefined}
                 disabled={songs.length===0||processing}>
                 {isPlaying?<IconPause/>:<IconPlay/>}
               </button>
-              <button className="t-btn" onClick={handleNext} disabled={!currentSong||activeIdx>=songs.length-1}>
-                <IconNext/>
-              </button>
+              <button className="t-btn" onClick={handleNext} disabled={!currentSong||activeIdx>=songs.length-1}><IconNext/></button>
             </div>
           </div>
         </div>
