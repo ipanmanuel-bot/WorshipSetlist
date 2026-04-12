@@ -640,7 +640,7 @@ export default function WorshipSetlist() {
     if(!ytUrl.trim()) return;
     setYtLoading(true); setYtError('');
     try{
-      const res=await fetch('https://pitchlist-backend--ipanmanuel.replit.app/download',{
+      const res=await fetch('https://pitchlist-backend-production.up.railway.app/download',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({url:ytUrl.trim()})
