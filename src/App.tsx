@@ -25,25 +25,33 @@ function fft(re, im, inv) {
 }
 
 /* ─── Phase Vocoder — chunked async ──────────────────────── */
-const yld = () => new Promise(r => setTimeout(r, 0));
+// MessageChannel is ~10x faster than setTimeout(0) for yielding
+const yld = () => new Promise<void>(r => { const ch=new MessageChannel(); ch.port1.onmessage=()=>r(); ch.port2.postMessage(0); });
+// Pre-computed Hann window avoids recalculating on every pvStretchAsync call
+const FFT_SIZE=1024;
+const HANN_WIN=new Float32Array(FFT_SIZE);
+for(let i=0;i<FFT_SIZE;i++) HANN_WIN[i]=0.5*(1-Math.cos(2*Math.PI*i/(FFT_SIZE-1)));
+
 async function pvStretchAsync(audioBuffer, stretch, onProg) {
-  const FFT=1024, HOP_A=256, HOP_S=Math.max(1,Math.round(HOP_A*stretch));
-  const TP=2*Math.PI, HALF=FFT>>1, CHUNK=64;
+  const FFT=FFT_SIZE, HOP_A=256, HOP_S=Math.max(1,Math.round(HOP_A*stretch));
+  const TP=2*Math.PI, HALF=FFT>>1, CHUNK=128; // 128 chunks = half as many yields
   const numCh=audioBuffer.numberOfChannels, inLen=audioBuffer.length;
   const outLen=Math.max(1,Math.round(inLen*stretch));
-  const win=new Float32Array(FFT);
-  for(let i=0;i<FFT;i++) win[i]=0.5*(1-Math.cos(TP*i/(FFT-1)));
+  const win=HANN_WIN;
   const result=[];
+  // Reusable temp buffers allocated once per channel (not per hop)
+  const re=new Float32Array(FFT), im=new Float32Array(FFT);
+  const or=new Float32Array(FFT), oi=new Float32Array(FFT);
   for(let ch=0;ch<numCh;ch++){
     const input=audioBuffer.getChannelData(ch);
     const out=new Float32Array(outLen+FFT), wn=new Float32Array(outLen+FFT);
     const lp=new Float32Array(FFT), sp=new Float32Array(FFT);
     let inPos=0, outPos=0, hop=0;
     while(inPos<inLen+FFT){
-      const re=new Float32Array(FFT), im=new Float32Array(FFT);
+      re.fill(0); im.fill(0);
       for(let i=0;i<FFT;i++){const s=inPos-HALF+i; re[i]=(s>=0&&s<inLen)?input[s]*win[i]:0;}
       fft(re,im,false);
-      const or=new Float32Array(FFT), oi=new Float32Array(FFT);
+      or.fill(0); oi.fill(0);
       for(let k=0;k<=HALF;k++){
         const mag=Math.sqrt(re[k]*re[k]+im[k]*im[k]), ph=Math.atan2(im[k],re[k]);
         let dp=ph-lp[k]-TP*k*HOP_A/FFT; dp-=TP*Math.round(dp/TP);
@@ -65,6 +73,10 @@ async function pvStretchAsync(audioBuffer, stretch, onProg) {
   }
   return result;
 }
+
+/* ─── In-memory processed buffer cache ──────────────────── */
+// Avoids re-decoding WAV from IndexedDB (decodeAudioData is expensive)
+const processedBufferCache = new Map<string, AudioBuffer>();
 
 /* ─── IndexedDB persistence ──────────────────────────────── */
 const DB_NAME='worship-setlist', DB_STORE='songs', DB_CACHE='buffers', DB_VER=2;
@@ -369,6 +381,7 @@ export default function WorshipSetlist() {
   const songsRef     = useRef(songs);
   const activeIdxRef = useRef(activeIdx);
   const isPlayingRef = useRef(isPlaying);
+  const getProcBufRef= useRef<((song:any)=>Promise<AudioBuffer>)|null>(null);
   useEffect(()=>{ songsRef.current=songs; },         [songs]);
   useEffect(()=>{ activeIdxRef.current=activeIdx; }, [activeIdx]);
   useEffect(()=>{ isPlayingRef.current=isPlaying; }, [isPlaying]);
@@ -440,11 +453,21 @@ export default function WorshipSetlist() {
     if(song.pitch===0&&song.tempo===100) return song.audioBuffer;
 
     const cacheKey=`${song.id}-${song.pitch}-${song.tempo}`;
+
+    // Check module-level in-memory cache first (avoids expensive decodeAudioData)
+    const memHit=processedBufferCache.get(cacheKey);
+    if(memHit){
+      setSongs(prev=>prev.map(s=>s.id===song.id
+        ?{...s,cachedBuffer:memHit,cachedPitch:song.pitch,cachedTempo:song.tempo}:s));
+      return memHit;
+    }
+
     try{
       const cached=await dbGetCache(cacheKey);
       if(cached){
         const ctx=getCtx();
         const rendered=await ctx.decodeAudioData(cached.arrayBuffer.slice(0));
+        processedBufferCache.set(cacheKey,rendered);
         setSongs(prev=>prev.map(s=>s.id===song.id
           ?{...s,cachedBuffer:rendered,cachedPitch:song.pitch,cachedTempo:song.tempo}:s));
         return rendered;
@@ -466,6 +489,7 @@ export default function WorshipSetlist() {
     const rendered=await offCtx.startRendering();
     setProcPct(1);
 
+    processedBufferCache.set(cacheKey,rendered);
     try{
       const arrayBuffer=audioBufferToArrayBuffer(rendered);
       dbPutCache(cacheKey,arrayBuffer).catch(()=>{});
@@ -475,6 +499,8 @@ export default function WorshipSetlist() {
       ?{...s,cachedBuffer:rendered,cachedPitch:song.pitch,cachedTempo:song.tempo}:s));
     return rendered;
   },[]);
+  // Keep ref in sync so updateSong can trigger eager pre-computation
+  useEffect(()=>{ getProcBufRef.current=getProcessedBuffer; },[getProcessedBuffer]);
 
   const playFrom=useCallback(async(idx,offset=0)=>{
     if(busyRef.current) return;
@@ -629,16 +655,24 @@ export default function WorshipSetlist() {
     finally{ setExporting(null); }
   };
 
-  const updateSong=(id,key,val)=>setSongs(prev=>prev.map(s=>{
-    if(s.id!==id) return s;
-    const updated={...s,[key]:val};
-    openDB().then(db=>{
-      const store=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE);
-      const req=store.get(id);
-      req.onsuccess=e=>{ if(e.target.result) store.put({...e.target.result,pitch:updated.pitch,tempo:updated.tempo}); };
-    }).catch(()=>{});
-    return updated;
-  }));
+  const updateSong=(id,key,val)=>{
+    setSongs(prev=>prev.map(s=>{
+      if(s.id!==id) return s;
+      const updated={...s,[key]:val};
+      openDB().then(db=>{
+        const store=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE);
+        const req=store.get(id);
+        req.onsuccess=e=>{ if(e.target.result) store.put({...e.target.result,pitch:updated.pitch,tempo:updated.tempo}); };
+      }).catch(()=>{});
+      return updated;
+    }));
+    // Eagerly pre-compute processed buffer in background so play is instant
+    const song=songsRef.current.find(s=>s.id===id);
+    if(song&&getProcBufRef.current){
+      const updated={...song,[key]:val};
+      if(updated.pitch!==0||updated.tempo!==100) getProcBufRef.current(updated).catch(()=>{});
+    }
+  };
 
   const loadFiles=async files=>{
     const ctx=getCtx();
