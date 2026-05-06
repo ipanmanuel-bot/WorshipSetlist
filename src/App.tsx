@@ -1,91 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
-/* ─── FFT (in-place radix-2) ─────────────────────────────── */
-function fft(re, im, inv) {
-  const n = re.length;
-  for (let i=1,j=0;i<n;i++){
-    let b=n>>1;for(;j&b;b>>=1)j^=b;j^=b;
-    if(i<j){let t=re[i];re[i]=re[j];re[j]=t;t=im[i];im[i]=im[j];im[j]=t;}
-  }
-  for(let len=2;len<=n;len<<=1){
-    const ang=(inv?1:-1)*2*Math.PI/len, wr=Math.cos(ang), wi=Math.sin(ang);
-    for(let i=0;i<n;i+=len){
-      let ur=1,ui=0;
-      for(let j=0;j<len>>1;j++){
-        const ar=re[i+j],ai=im[i+j];
-        const br=re[i+j+(len>>1)]*ur-im[i+j+(len>>1)]*ui;
-        const bi=re[i+j+(len>>1)]*ui+im[i+j+(len>>1)]*ur;
-        re[i+j]=ar+br; im[i+j]=ai+bi;
-        re[i+j+(len>>1)]=ar-br; im[i+j+(len>>1)]=ai-bi;
-        [ur,ui]=[ur*wr-ui*wi, ur*wi+ui*wr];
-      }
-    }
-  }
-  if(inv) for(let i=0;i<n;i++){re[i]/=n;im[i]/=n;}
-}
-
-/* ─── Phase Vocoder — chunked async ──────────────────────── */
-// MessageChannel is ~10x faster than setTimeout(0) for yielding
-const yld = () => new Promise<void>(r => { const ch=new MessageChannel(); ch.port1.onmessage=()=>r(); ch.port2.postMessage(0); });
-// Pre-computed Hann window avoids recalculating on every pvStretchAsync call
-const FFT_SIZE=1024;
-const HANN_WIN=new Float32Array(FFT_SIZE);
-for(let i=0;i<FFT_SIZE;i++) HANN_WIN[i]=0.5*(1-Math.cos(2*Math.PI*i/(FFT_SIZE-1)));
-
-async function pvStretchAsync(audioBuffer, stretch, onProg) {
-  const FFT=FFT_SIZE, HOP_A=256, HOP_S=Math.max(1,Math.round(HOP_A*stretch));
-  const TP=2*Math.PI, HALF=FFT>>1, CHUNK=128; // 128 chunks = half as many yields
-  const numCh=audioBuffer.numberOfChannels, inLen=audioBuffer.length;
-  const outLen=Math.max(1,Math.round(inLen*stretch));
-  const win=HANN_WIN;
-  const result=[];
-  // Reusable temp buffers allocated once per channel (not per hop)
-  const re=new Float32Array(FFT), im=new Float32Array(FFT);
-  const or=new Float32Array(FFT), oi=new Float32Array(FFT);
-  for(let ch=0;ch<numCh;ch++){
-    const input=audioBuffer.getChannelData(ch);
-    const out=new Float32Array(outLen+FFT), wn=new Float32Array(outLen+FFT);
-    const lp=new Float32Array(FFT), sp=new Float32Array(FFT);
-    let inPos=0, outPos=0, hop=0;
-    while(inPos<inLen+FFT){
-      re.fill(0); im.fill(0);
-      for(let i=0;i<FFT;i++){const s=inPos-HALF+i; re[i]=(s>=0&&s<inLen)?input[s]*win[i]:0;}
-      fft(re,im,false);
-      or.fill(0); oi.fill(0);
-      for(let k=0;k<=HALF;k++){
-        const mag=Math.sqrt(re[k]*re[k]+im[k]*im[k]), ph=Math.atan2(im[k],re[k]);
-        let dp=ph-lp[k]-TP*k*HOP_A/FFT; dp-=TP*Math.round(dp/TP);
-        sp[k]+=HOP_S*(TP*k/FFT+dp/HOP_A); lp[k]=ph;
-        or[k]=mag*Math.cos(sp[k]); oi[k]=mag*Math.sin(sp[k]);
-        if(k>0&&k<HALF){or[FFT-k]=or[k]; oi[FFT-k]=-oi[k];}
-      }
-      fft(or,oi,true);
-      for(let i=0;i<FFT;i++){
-        const op=outPos-HALF+i;
-        if(op>=0&&op<out.length){out[op]+=or[i]*win[i]; wn[op]+=win[i]*win[i];}
-      }
-      inPos+=HOP_A; outPos+=HOP_S; hop++;
-      if(outPos>outLen+HALF) break;
-      if(hop%CHUNK===0){ onProg&&onProg(Math.min(0.9,inPos/inLen)); await yld(); }
-    }
-    for(let i=0;i<outLen;i++) if(wn[i]>1e-8) out[i]/=wn[i];
-    result.push(out.slice(0,outLen));
-  }
-  return result;
-}
-
-/* ─── In-memory processed buffer cache ──────────────────── */
-// Avoids re-decoding WAV from IndexedDB (decodeAudioData is expensive)
-const processedBufferCache = new Map<string, AudioBuffer>();
-
 /* ─── IndexedDB persistence ──────────────────────────────── */
-const DB_NAME='worship-setlist', DB_STORE='songs', DB_CACHE='buffers', DB_VER=2;
+const DB_NAME='worship-setlist', DB_STORE='songs', DB_VER=3;
 const openDB=()=>new Promise((res,rej)=>{
   const req=indexedDB.open(DB_NAME,DB_VER);
   req.onupgradeneeded=e=>{
     const db=e.target.result;
     if(!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE,{keyPath:'id'});
-    if(!db.objectStoreNames.contains(DB_CACHE)) db.createObjectStore(DB_CACHE,{keyPath:'key'});
+    // Remove legacy processed-buffer cache store if upgrading from v1/v2
+    if(db.objectStoreNames.contains('buffers')) db.deleteObjectStore('buffers');
   };
   req.onsuccess=e=>res(e.target.result);
   req.onerror=e=>rej(e.target.error);
@@ -110,72 +33,6 @@ const dbDelete=async(id)=>{
     const req=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).delete(id);
     req.onsuccess=()=>res(); req.onerror=e=>rej(e.target.error);
   });
-};
-const dbGetCache=async(key)=>{
-  const db=await openDB();
-  return new Promise((res,rej)=>{
-    const req=db.transaction(DB_CACHE).objectStore(DB_CACHE).get(key);
-    req.onsuccess=e=>res(e.target.result||null); req.onerror=e=>rej(e.target.error);
-  });
-};
-const dbPutCache=async(key,arrayBuffer)=>{
-  const db=await openDB();
-  return new Promise((res,rej)=>{
-    const req=db.transaction(DB_CACHE,'readwrite').objectStore(DB_CACHE).put({key,arrayBuffer});
-    req.onsuccess=()=>res(); req.onerror=e=>rej(e.target.error);
-  });
-};
-const dbDeleteCache=async(songId)=>{
-  const db=await openDB();
-  const store=db.transaction(DB_CACHE,'readwrite').objectStore(DB_CACHE);
-  return new Promise((res,rej)=>{
-    const req=store.getAllKeys();
-    req.onsuccess=e=>{ e.target.result.filter(k=>k.startsWith(songId+'-')).forEach(k=>store.delete(k)); res(); };
-    req.onerror=e=>rej(e.target.error);
-  });
-};
-
-/* ─── MP3 export via lamejs (loaded dynamically) ─────────── */
-const loadLame=()=>new Promise(resolve=>{
-  if(window.lamejs){ resolve(window.lamejs); return; }
-  const s=document.createElement('script');
-  s.src='https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js';
-  s.onload=()=>resolve(window.lamejs);
-  document.head.appendChild(s);
-});
-
-const exportMp3=async(audioBuffer, filename)=>{
-  const lamejs=await loadLame();
-  const numCh=audioBuffer.numberOfChannels;
-  const sr=audioBuffer.sampleRate;
-  const left=audioBuffer.getChannelData(0);
-  const right=numCh>1?audioBuffer.getChannelData(1):left;
-
-  const mp3enc=new lamejs.Mp3Encoder(numCh,sr,128);
-  const CHUNK=1152;
-  const mp3Data=[];
-
-  const toInt16=f=>{ const v=Math.max(-1,Math.min(1,f)); return v<0?v*0x8000:v*0x7FFF; };
-
-  for(let i=0;i<left.length;i+=CHUNK){
-    const lChunk=new Int16Array(Math.min(CHUNK,left.length-i));
-    const rChunk=new Int16Array(Math.min(CHUNK,right.length-i));
-    for(let j=0;j<lChunk.length;j++){
-      lChunk[j]=toInt16(left[i+j]);
-      rChunk[j]=toInt16(right[i+j]);
-    }
-    const encoded=numCh>1?mp3enc.encodeBuffer(lChunk,rChunk):mp3enc.encodeBuffer(lChunk);
-    if(encoded.length>0) mp3Data.push(encoded);
-  }
-  const flushed=mp3enc.flush();
-  if(flushed.length>0) mp3Data.push(flushed);
-
-  const blob=new Blob(mp3Data,{type:'audio/mp3'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url; a.download=`${filename}.mp3`;
-  document.body.appendChild(a); a.click();
-  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); },1000);
 };
 
 /* ─── Themes ─────────────────────────────────────────────── */
@@ -279,10 +136,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .play-now-btn:hover:not(:disabled){background:var(--amber2);}
 .play-now-btn:active:not(:disabled){transform:scale(.97);}
 .play-now-btn:disabled{opacity:.5;cursor:not-allowed;}
-.export-btn{display:flex;align-items:center;justify-content:center;gap:6px;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:10px 14px;font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;min-height:42px;white-space:nowrap;-webkit-tap-highlight-color:transparent;}
-.export-btn:hover:not(:disabled){border-color:var(--amber);color:var(--amber);}
-.export-btn:active:not(:disabled){transform:scale(.97);}
-.export-btn:disabled{opacity:.4;cursor:not-allowed;}
 .drop-zone{margin:8px;border:1px dashed var(--border2);border-radius:10px;padding:22px 14px;text-align:center;color:var(--text3);transition:all .2s;cursor:pointer;}
 .drop-zone.over{border-color:var(--amber);color:var(--amber);background:rgba(212,136,26,.05);}
 .drop-icon{font-size:24px;opacity:.4;margin-bottom:6px;}
@@ -327,10 +180,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .t-btn.play-btn{min-width:58px;min-height:58px;background:var(--amber);border-color:var(--amber);color:#fff;}
 .t-btn.play-btn:hover:not(:disabled){background:var(--amber2);border-color:var(--amber2);}
 .t-btn:disabled{opacity:.2;cursor:not-allowed;}
-.proc-wrap{padding:4px 16px;}
-.proc-label{font-size:10px;color:var(--text2);text-align:center;margin-bottom:4px;font-family:'DM Mono',monospace;}
-.proc-track{background:var(--bg3);border-radius:3px;height:3px;overflow:hidden;}
-.proc-inner{height:100%;background:var(--amber);border-radius:3px;transition:width .15s linear;}
 .theme-btn{margin-left:auto;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:6px 10px;font-size:11px;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:5px;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;}
 .theme-btn:hover{border-color:var(--amber);color:var(--amber);}
 .theme-dropdown{position:absolute;top:58px;right:12px;z-index:100;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4);min-width:160px;}
@@ -338,7 +187,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .theme-option:hover{background:var(--bg3);}
 .theme-option.active{color:var(--amber);font-weight:600;}
 .theme-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
-@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 `;
 
 const fmt=s=>!s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
@@ -349,7 +197,6 @@ const IconNext=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="current
 const IconPlay=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
 const IconPause=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>;
 const IconPlaySm=()=><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
-const IconExport=()=><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg>;
 
 export default function WorshipSetlist() {
   const [songs,      setSongs]      = useState([]);
@@ -357,31 +204,29 @@ export default function WorshipSetlist() {
   const [isPlaying,  setIsPlaying]  = useState(false);
   const [progress,   setProgress]   = useState(0);
   const [duration,   setDuration]   = useState(0);
-  const [processing, setProcessing] = useState(false);
-  const [procPct,    setProcPct]    = useState(0);
   const [dragOver,   setDragOver]   = useState(false);
   const [themeId,    setThemeId]    = useState(getSavedTheme);
   const [showThemes, setShowThemes] = useState(false);
   const [dragOverIdx,setDragOverIdx]= useState(null);
-  const [exporting,  setExporting]  = useState(null); // song id being exported
 
-  const fileInputRef = useRef(null);
-  const actxRef      = useRef(null);
-  const sourceRef    = useRef(null);
-  const startTimeRef = useRef(0);
-  const pausedAtRef  = useRef(0);
-  const rafRef       = useRef(null);
-  const durationRef  = useRef(0);
-  const genRef       = useRef(0);
-  const busyRef      = useRef(false);
-  const dragSrcRef   = useRef(null);
-  const floatRef     = useRef(null);
-  const touchSrcIdx  = useRef(null);
+  const fileInputRef    = useRef(null);
+  const actxRef         = useRef(null);
+  const sourceRef       = useRef(null);  // kept for compat (unused by worklet path)
+  const workletNodeRef  = useRef<AudioWorkletNode|null>(null);
+  const workletReadyRef = useRef<Promise<void>|null>(null);
+  const startTimeRef    = useRef(0);
+  const pausedAtRef     = useRef(0);
+  const rafRef          = useRef(null);
+  const durationRef     = useRef(0);
+  const genRef          = useRef(0);
+  const busyRef         = useRef(false);
+  const dragSrcRef      = useRef(null);
+  const floatRef        = useRef(null);
+  const touchSrcIdx     = useRef(null);
 
   const songsRef     = useRef(songs);
   const activeIdxRef = useRef(activeIdx);
   const isPlayingRef = useRef(isPlaying);
-  const getProcBufRef= useRef<((song:any)=>Promise<AudioBuffer>)|null>(null);
   useEffect(()=>{ songsRef.current=songs; },         [songs]);
   useEffect(()=>{ activeIdxRef.current=activeIdx; }, [activeIdx]);
   useEffect(()=>{ isPlayingRef.current=isPlaying; }, [isPlaying]);
@@ -424,7 +269,19 @@ export default function WorshipSetlist() {
     return actxRef.current;
   };
 
+  /* Register pv-processor.js once per AudioContext lifetime */
+  const ensureWorklet=async()=>{
+    const ctx=getCtx();
+    if(!workletReadyRef.current)
+      workletReadyRef.current=ctx.audioWorklet.addModule('/pv-processor.js');
+    await workletReadyRef.current;
+  };
+
   const stopSource=()=>{
+    if(workletNodeRef.current){
+      try{workletNodeRef.current.port.postMessage({t:'stop'});}catch{}
+      workletNodeRef.current.disconnect(); workletNodeRef.current=null;
+    }
     if(sourceRef.current){try{sourceRef.current.stop();}catch{}sourceRef.current.disconnect();sourceRef.current=null;}
     if(rafRef.current) cancelAnimationFrame(rafRef.current);
   };
@@ -447,83 +304,49 @@ export default function WorshipSetlist() {
     return ab;
   };
 
-  const getProcessedBuffer=useCallback(async(song)=>{
-    if(song.cachedBuffer&&song.cachedPitch===song.pitch&&song.cachedTempo===song.tempo)
-      return song.cachedBuffer;
-    if(song.pitch===0&&song.tempo===100) return song.audioBuffer;
-
-    const cacheKey=`${song.id}-${song.pitch}-${song.tempo}`;
-
-    // Check module-level in-memory cache first (avoids expensive decodeAudioData)
-    const memHit=processedBufferCache.get(cacheKey);
-    if(memHit){
-      setSongs(prev=>prev.map(s=>s.id===song.id
-        ?{...s,cachedBuffer:memHit,cachedPitch:song.pitch,cachedTempo:song.tempo}:s));
-      return memHit;
-    }
-
-    try{
-      const cached=await dbGetCache(cacheKey);
-      if(cached){
-        const ctx=getCtx();
-        const rendered=await ctx.decodeAudioData(cached.arrayBuffer.slice(0));
-        processedBufferCache.set(cacheKey,rendered);
-        setSongs(prev=>prev.map(s=>s.id===song.id
-          ?{...s,cachedBuffer:rendered,cachedPitch:song.pitch,cachedTempo:song.tempo}:s));
-        return rendered;
-      }
-    }catch(e){ console.warn('Cache read failed:',e); }
-
-    const ab=song.audioBuffer, numCh=ab.numberOfChannels;
-    const pitchFactor=Math.pow(2,song.pitch/12), tempoFactor=song.tempo/100;
-    setProcPct(0);
-    const stretched=await pvStretchAsync(ab,pitchFactor/tempoFactor,p=>setProcPct(p));
-    setProcPct(0.95);
-    const outLen=Math.max(1,Math.round(ab.length/tempoFactor));
-    const offCtx=new OfflineAudioContext(numCh,outLen,ab.sampleRate);
-    const strBuf=offCtx.createBuffer(numCh,stretched[0].length,ab.sampleRate);
-    for(let c=0;c<numCh;c++) strBuf.copyToChannel(stretched[c],c);
-    const src=offCtx.createBufferSource();
-    src.buffer=strBuf; src.playbackRate.value=pitchFactor;
-    src.connect(offCtx.destination); src.start(0);
-    const rendered=await offCtx.startRendering();
-    setProcPct(1);
-
-    processedBufferCache.set(cacheKey,rendered);
-    try{
-      const arrayBuffer=audioBufferToArrayBuffer(rendered);
-      dbPutCache(cacheKey,arrayBuffer).catch(()=>{});
-    }catch(e){ console.warn('Cache write failed:',e); }
-
-    setSongs(prev=>prev.map(s=>s.id===song.id
-      ?{...s,cachedBuffer:rendered,cachedPitch:song.pitch,cachedTempo:song.tempo}:s));
-    return rendered;
-  },[]);
-  // Keep ref in sync so updateSong can trigger eager pre-computation
-  useEffect(()=>{ getProcBufRef.current=getProcessedBuffer; },[getProcessedBuffer]);
-
   const playFrom=useCallback(async(idx,offset=0)=>{
     if(busyRef.current) return;
     busyRef.current=true;
     const song=songsRef.current[idx];
     if(!song){ busyRef.current=false; return; }
-    setProcessing(true); stopSource();
+    stopSource();
     const ctx=getCtx(); if(ctx.state==="suspended") await ctx.resume();
     try{
-      const buffer=await getProcessedBuffer(song);
-      durationRef.current=buffer.duration;
-      setDuration(buffer.duration); setProgress(offset);
-      const src=ctx.createBufferSource();
-      src.buffer=buffer; src.connect(ctx.destination); src.start(0,offset);
-      startTimeRef.current=ctx.currentTime-offset; sourceRef.current=src;
+      await ensureWorklet();
+      const ab=song.audioBuffer;
+      const numCh=ab.numberOfChannels;
+      const tempoFactor=song.tempo/100;
+      const outDuration=ab.duration/tempoFactor;
+
+      /* Copy channel data so the AudioBuffer stays intact for export */
+      const ch:Float32Array[]=[];
+      for(let c=0;c<numCh;c++) ch.push(new Float32Array(ab.getChannelData(c)));
+
+      const startSample=Math.round(offset*tempoFactor*ab.sampleRate);
+
+      const node=new AudioWorkletNode(ctx,'pv-proc',{
+        numberOfOutputs:1, outputChannelCount:[numCh]
+      });
+      node.parameters.get('pitch').value=song.pitch;
+      node.parameters.get('tempo').value=tempoFactor;
+      /* Transfer copies to worklet (zero-copy after slice above) */
+      node.port.postMessage({t:'load',ch,s:startSample},ch.map(f=>f.buffer));
+
       const gen=++genRef.current;
-      src.onended=()=>{
-        if(genRef.current!==gen) return;
+      node.port.onmessage=({data})=>{
+        if(data.t!=='ended'||genRef.current!==gen) return;
         if(!isPlayingRef.current) return;
         const next=activeIdxRef.current+1;
         if(next<songsRef.current.length){setActiveIdx(next);pausedAtRef.current=0;playFrom(next,0);}
         else{setIsPlaying(false);setProgress(0);pausedAtRef.current=0;}
       };
+
+      node.connect(ctx.destination);
+      workletNodeRef.current=node;
+      durationRef.current=outDuration;
+      setDuration(outDuration); setProgress(offset);
+      startTimeRef.current=ctx.currentTime-offset;
+
       const tick=()=>{
         const el=ctx.currentTime-startTimeRef.current;
         setProgress(Math.min(el,durationRef.current));
@@ -532,11 +355,10 @@ export default function WorshipSetlist() {
       rafRef.current=requestAnimationFrame(tick);
       setActiveIdx(idx); setIsPlaying(true);
     }catch(e){console.error(e);}
-    finally{setProcessing(false);setProcPct(0);busyRef.current=false;}
-  },[getProcessedBuffer]);
+    finally{busyRef.current=false;}
+  },[]);
 
   const handlePlayPause=()=>{
-    if(processing) return;
     const ctx=getCtx();
     if(isPlaying){
       pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
@@ -641,20 +463,6 @@ export default function WorshipSetlist() {
     });
   };
 
-  // Export MP3
-  const handleExport=async(e,song)=>{
-    e.stopPropagation();
-    setExporting(song.id);
-    try{
-      const buffer=await getProcessedBuffer(song);
-      const label=pitchLabel(song.pitch)==='±0'&&song.tempo===100
-        ?song.name
-        :`${song.name} (${pitchLabel(song.pitch)}st ${song.tempo}%)`;
-      await exportMp3(buffer,label);
-    }catch(err){ console.error('Export failed:',err); alert('Export failed: '+err.message); }
-    finally{ setExporting(null); }
-  };
-
   const updateSong=(id,key,val)=>{
     setSongs(prev=>prev.map(s=>{
       if(s.id!==id) return s;
@@ -666,11 +474,18 @@ export default function WorshipSetlist() {
       }).catch(()=>{});
       return updated;
     }));
-    // Eagerly pre-compute processed buffer in background so play is instant
-    const song=songsRef.current.find(s=>s.id===id);
-    if(song&&getProcBufRef.current){
+    /* If this song is currently playing, update worklet AudioParams instantly */
+    const isActive=songsRef.current[activeIdxRef.current]?.id===id;
+    if(isActive&&workletNodeRef.current){
+      const song=songsRef.current.find(s=>s.id===id);
+      if(!song) return;
       const updated={...song,[key]:val};
-      if(updated.pitch!==0||updated.tempo!==100) getProcBufRef.current(updated).catch(()=>{});
+      workletNodeRef.current.parameters.get('pitch').value=updated.pitch;
+      const tf=updated.tempo/100;
+      workletNodeRef.current.parameters.get('tempo').value=tf;
+      /* Recalculate output duration when tempo changes */
+      const newDur=updated.audioBuffer.duration/tf;
+      durationRef.current=newDur; setDuration(newDur);
     }
   };
 
@@ -684,7 +499,7 @@ export default function WorshipSetlist() {
           const audioBuffer=await ctx.decodeAudioData(ab);
           return{id:Math.random().toString(36).slice(2,9),
             name:file.name.replace(/\.[^.]+$/,""),audioBuffer,
-            pitch:0,tempo:100,cachedBuffer:null,cachedPitch:null,cachedTempo:null};
+            pitch:0,tempo:100};
         })
     );
     setSongs(prev=>{
@@ -700,7 +515,6 @@ export default function WorshipSetlist() {
   const removeSong=(id,e)=>{
     e.stopPropagation();
     dbDelete(id).catch(()=>{});
-    dbDeleteCache(id).catch(()=>{});
     setSongs(prev=>{
       const ri=prev.findIndex(s=>s.id===id);
       const next=prev.filter(s=>s.id!==id);
@@ -824,19 +638,9 @@ export default function WorshipSetlist() {
                             </div>
                             <div className="song-actions">
                               <button className="play-now-btn"
-                                disabled={processing}
                                 onClick={e=>{e.stopPropagation();pausedAtRef.current=0;playFrom(idx,0);}}>
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                                {processing&&activeIdx===idx?`Processing… ${Math.round(procPct*100)}%`:'Play'}
-                              </button>
-                             <button className="export-btn"
-                                disabled={exporting===song.id||!(song.cachedBuffer&&song.cachedPitch===song.pitch&&song.cachedTempo===song.tempo)&&!(song.pitch===0&&song.tempo===100)}
-                                onClick={e=>handleExport(e,song)}>
-                                {exporting===song.id
-                                  ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" style={{animation:'spin .7s linear infinite',transformOrigin:'center'}}/></svg>
-                                  : <IconExport/>
-                                }
-                                {exporting===song.id?'Exporting…':'Export MP3'}
+                                Play
                               </button>
                             </div>
                           </div>
@@ -872,7 +676,7 @@ export default function WorshipSetlist() {
                     if(!window.confirm('Clear all songs from the setlist?')) return;
                     stopSource(); setIsPlaying(false); setActiveIdx(null);
                     setProgress(0); setDuration(0); pausedAtRef.current=0;
-                    songs.forEach(s=>{ dbDelete(s.id).catch(()=>{}); dbDeleteCache(s.id).catch(()=>{}); });
+                    songs.forEach(s=>{ dbDelete(s.id).catch(()=>{}); });
                     setSongs([]);
                   }}>Clear Setlist</button>
                 )}
@@ -904,13 +708,6 @@ export default function WorshipSetlist() {
               )}
             </div>
 
-            {processing&&(
-              <div className="proc-wrap">
-                <div className="proc-label">Processing… {Math.round(procPct*100)}%</div>
-                <div className="proc-track"><div className="proc-inner" style={{width:`${procPct*100}%`}}/></div>
-              </div>
-            )}
-
             <div className="progress-wrap">
               <div className="prog-bar"
                 onClick={handleProgressClick}
@@ -926,7 +723,7 @@ export default function WorshipSetlist() {
               <button className="t-btn" onClick={handlePrev} disabled={!currentSong||activeIdx===0}><IconPrev/></button>
               <button className="t-btn play-btn"
                 onClick={songs.length>0?handlePlayPause:undefined}
-                disabled={songs.length===0||processing}>
+                disabled={songs.length===0}>
                 {isPlaying?<IconPause/>:<IconPlay/>}
               </button>
               <button className="t-btn" onClick={handleNext} disabled={!currentSong||activeIdx>=songs.length-1}><IconNext/></button>
