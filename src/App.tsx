@@ -88,7 +88,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .header h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:600;letter-spacing:-.5px;color:var(--text);}
 .main{flex:1;overflow:hidden;display:flex;}
 @media(max-width:660px){.main{flex-direction:column;}}
-.playlist-panel{flex:1;display:flex;flex-direction:column;border-right:1px solid var(--border);overflow:hidden;min-width:0;}
+.playlist-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
 @media(max-width:660px){.playlist-panel{flex:1;border-right:none;}}
 .panel-head{flex-shrink:0;padding:11px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--bg2);}
 .panel-label{font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text2);}
@@ -150,30 +150,32 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .clear-btn{background:none;border:1px solid var(--border2);color:var(--red);border-radius:6px;padding:4px 10px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;transition:all .15s;white-space:nowrap;-webkit-tap-highlight-color:transparent;}
 .clear-btn:hover{background:var(--red);color:#fff;border-color:var(--red);}
 .clear-btn:active{transform:scale(.95);}
-.player-panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;background:var(--bg2);overflow:hidden;}
-@media(max-width:660px){.player-panel{width:100%;flex-shrink:0;border-top:1px solid var(--border);}}
-.now-playing{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px 16px 8px;gap:4px;text-align:center;}
-@media(max-width:660px){.now-playing{flex-direction:row;text-align:left;align-items:center;padding:12px 16px;gap:14px;flex:none;}}
-.vinyl-wrap{position:relative;width:96px;height:96px;flex-shrink:0;}
-@media(max-width:660px){.vinyl-wrap{width:52px;height:52px;}}
+.player-panel{width:100%;flex-shrink:0;display:flex;flex-direction:row;align-items:center;background:var(--bg2);border-top:1px solid var(--border);padding:0 20px;gap:16px;height:80px;}
+@media(max-width:660px){.player-panel{height:auto;flex-direction:column;padding:0;gap:0;}}
+.now-playing{display:flex;flex-direction:row;align-items:center;padding:0;gap:10px;width:220px;flex-shrink:0;order:1;}
+@media(max-width:660px){.now-playing{width:100%;padding:10px 16px;order:0;}}
+.vinyl-wrap{position:relative;width:46px;height:46px;flex-shrink:0;}
+@media(max-width:660px){.vinyl-wrap{width:46px;height:46px;}}
 .vinyl{width:100%;height:100%;border-radius:50%;background:radial-gradient(circle at 50% 50%,var(--bg4) 18%,transparent 18%),repeating-conic-gradient(var(--bg3) 0deg 4deg,var(--bg) 4deg 8deg);border:1px solid var(--border2);box-shadow:0 0 0 1px var(--border),0 6px 20px rgba(0,0,0,.5);}
 .vinyl.spin{animation:vspin 3s linear infinite;}
 @keyframes vspin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-.vinyl-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;background:var(--amber);display:flex;align-items:center;justify-content:center;font-size:12px;}
-@media(max-width:660px){.vinyl-label{width:17px;height:17px;font-size:8px;}}
-.np-info{display:flex;flex-direction:column;gap:3px;min-width:0;}
-.np-eyebrow{font-size:9px;letter-spacing:2.5px;text-transform:uppercase;color:var(--amber);font-weight:600;}
-.np-title{font-family:'Syne',serif;font-size:17px;line-height:1.3;}
+.vinyl-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:17px;height:17px;border-radius:50%;background:var(--amber);display:flex;align-items:center;justify-content:center;font-size:9px;}
+.np-info{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.np-eyebrow{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--amber);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.np-title{font-family:'Syne',serif;font-size:14px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .np-empty{color:var(--text3);font-size:12px;font-style:italic;}
-.np-badges{display:flex;gap:5px;margin-top:3px;flex-wrap:wrap;}
+.np-badges{display:none;}
+@media(max-width:660px){.np-badges{display:flex;gap:5px;margin-top:3px;flex-wrap:wrap;}}
 .np-badge{padding:3px 9px;border-radius:20px;background:var(--bg3);border:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--amber2);}
-.progress-wrap{padding:5px 16px;}
+.progress-wrap{flex:1;padding:0;min-width:0;order:3;}
+@media(max-width:660px){.progress-wrap{padding:4px 16px;width:100%;flex:none;order:0;}}
 .prog-bar{background:var(--bg3);border-radius:3px;height:4px;cursor:pointer;position:relative;margin-bottom:5px;-webkit-tap-highlight-color:transparent;}
 .prog-fill{background:linear-gradient(90deg,var(--amber),var(--amber2));height:100%;border-radius:3px;pointer-events:none;}
 .prog-thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:50%;background:var(--amber2);border:2px solid var(--bg2);box-shadow:0 1px 6px rgba(0,0,0,.4);pointer-events:none;transition:transform .1s;}
 .prog-bar:hover .prog-thumb,.prog-bar:active .prog-thumb{transform:translate(-50%,-50%) scale(1.3);}
 .prog-times{display:flex;justify-content:space-between;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);}
-.transport{padding:8px 16px 16px;display:flex;align-items:center;justify-content:center;gap:10px;}
+.transport{display:flex;align-items:center;justify-content:center;gap:8px;padding:0;flex-shrink:0;order:2;}
+@media(max-width:660px){.transport{padding:8px 16px 12px;order:0;}}
 .t-btn{min-width:46px;min-height:46px;border-radius:50%;background:none;border:1px solid var(--border2);color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;-webkit-tap-highlight-color:transparent;}
 .t-btn:active{transform:scale(.91);}
 .t-btn:hover:not(:disabled){border-color:var(--amber);color:var(--amber);}
@@ -683,9 +685,10 @@ export default function WorshipSetlist() {
               </div>
             </div>
           </div>
+        </div>
 
-          {/* Player */}
-          <div className="player-panel">
+        {/* Player — bottom bar */}
+        <div className="player-panel">
             <div className="now-playing">
               <div className="vinyl-wrap">
                 <div className={`vinyl${isPlaying?" spin":""}`}/>
@@ -729,7 +732,6 @@ export default function WorshipSetlist() {
               <button className="t-btn" onClick={handleNext} disabled={!currentSong||activeIdx>=songs.length-1}><IconNext/></button>
             </div>
           </div>
-        </div>
       </div>
     </>
   );
