@@ -88,7 +88,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .header h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:600;letter-spacing:-.5px;color:var(--text);}
 .main{flex:1;overflow:hidden;display:flex;}
 @media(max-width:660px){.main{flex-direction:column;}}
-.playlist-panel{flex:1;display:flex;flex-direction:column;border-right:1px solid var(--border);overflow:hidden;min-width:0;}
+.playlist-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
 @media(max-width:660px){.playlist-panel{flex:1;border-right:none;}}
 .panel-head{flex-shrink:0;padding:11px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--bg2);}
 .panel-label{font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--text2);}
@@ -136,6 +136,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .play-now-btn:hover:not(:disabled){background:var(--amber2);}
 .play-now-btn:active:not(:disabled){transform:scale(.97);}
 .play-now-btn:disabled{opacity:.5;cursor:not-allowed;}
+.export-btn{display:flex;align-items:center;justify-content:center;gap:6px;background:var(--bg3);color:var(--text2);border:1px solid var(--border2);border-radius:8px;padding:10px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;min-height:42px;white-space:nowrap;-webkit-tap-highlight-color:transparent;}
+.export-btn:hover:not(:disabled){border-color:var(--amber);color:var(--amber);}
+.export-btn:active:not(:disabled){transform:scale(.96);}
+.export-btn:disabled{opacity:.45;cursor:not-allowed;}
 .drop-zone{margin:8px;border:1px dashed var(--border2);border-radius:10px;padding:22px 14px;text-align:center;color:var(--text3);transition:all .2s;cursor:pointer;}
 .drop-zone.over{border-color:var(--amber);color:var(--amber);background:rgba(212,136,26,.05);}
 .drop-icon{font-size:24px;opacity:.4;margin-bottom:6px;}
@@ -150,30 +154,32 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .clear-btn{background:none;border:1px solid var(--border2);color:var(--red);border-radius:6px;padding:4px 10px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;transition:all .15s;white-space:nowrap;-webkit-tap-highlight-color:transparent;}
 .clear-btn:hover{background:var(--red);color:#fff;border-color:var(--red);}
 .clear-btn:active{transform:scale(.95);}
-.player-panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;background:var(--bg2);overflow:hidden;}
-@media(max-width:660px){.player-panel{width:100%;flex-shrink:0;border-top:1px solid var(--border);}}
-.now-playing{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px 16px 8px;gap:4px;text-align:center;}
-@media(max-width:660px){.now-playing{flex-direction:row;text-align:left;align-items:center;padding:12px 16px;gap:14px;flex:none;}}
-.vinyl-wrap{position:relative;width:96px;height:96px;flex-shrink:0;}
-@media(max-width:660px){.vinyl-wrap{width:52px;height:52px;}}
+.player-panel{width:100%;flex-shrink:0;display:flex;flex-direction:row;align-items:center;background:var(--bg2);border-top:1px solid var(--border);padding:0 20px;gap:16px;height:80px;}
+@media(max-width:660px){.player-panel{height:auto;flex-direction:column;padding:0;gap:0;}}
+.now-playing{display:flex;flex-direction:row;align-items:center;padding:0;gap:10px;width:220px;flex-shrink:0;order:1;}
+@media(max-width:660px){.now-playing{width:100%;padding:10px 16px;order:0;}}
+.vinyl-wrap{position:relative;width:46px;height:46px;flex-shrink:0;}
+@media(max-width:660px){.vinyl-wrap{width:46px;height:46px;}}
 .vinyl{width:100%;height:100%;border-radius:50%;background:radial-gradient(circle at 50% 50%,var(--bg4) 18%,transparent 18%),repeating-conic-gradient(var(--bg3) 0deg 4deg,var(--bg) 4deg 8deg);border:1px solid var(--border2);box-shadow:0 0 0 1px var(--border),0 6px 20px rgba(0,0,0,.5);}
 .vinyl.spin{animation:vspin 3s linear infinite;}
 @keyframes vspin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-.vinyl-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:26px;height:26px;border-radius:50%;background:var(--amber);display:flex;align-items:center;justify-content:center;font-size:12px;}
-@media(max-width:660px){.vinyl-label{width:17px;height:17px;font-size:8px;}}
-.np-info{display:flex;flex-direction:column;gap:3px;min-width:0;}
-.np-eyebrow{font-size:9px;letter-spacing:2.5px;text-transform:uppercase;color:var(--amber);font-weight:600;}
-.np-title{font-family:'Syne',serif;font-size:17px;line-height:1.3;}
+.vinyl-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:17px;height:17px;border-radius:50%;background:var(--amber);display:flex;align-items:center;justify-content:center;font-size:9px;}
+.np-info{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.np-eyebrow{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--amber);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.np-title{font-family:'Syne',serif;font-size:14px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .np-empty{color:var(--text3);font-size:12px;font-style:italic;}
-.np-badges{display:flex;gap:5px;margin-top:3px;flex-wrap:wrap;}
+.np-badges{display:none;}
+@media(max-width:660px){.np-badges{display:flex;gap:5px;margin-top:3px;flex-wrap:wrap;}}
 .np-badge{padding:3px 9px;border-radius:20px;background:var(--bg3);border:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--amber2);}
-.progress-wrap{padding:5px 16px;}
+.progress-wrap{flex:1;padding:0;min-width:0;order:3;}
+@media(max-width:660px){.progress-wrap{padding:4px 16px;width:100%;flex:none;order:0;}}
 .prog-bar{background:var(--bg3);border-radius:3px;height:4px;cursor:pointer;position:relative;margin-bottom:5px;-webkit-tap-highlight-color:transparent;}
 .prog-fill{background:linear-gradient(90deg,var(--amber),var(--amber2));height:100%;border-radius:3px;pointer-events:none;}
 .prog-thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:50%;background:var(--amber2);border:2px solid var(--bg2);box-shadow:0 1px 6px rgba(0,0,0,.4);pointer-events:none;transition:transform .1s;}
 .prog-bar:hover .prog-thumb,.prog-bar:active .prog-thumb{transform:translate(-50%,-50%) scale(1.3);}
 .prog-times{display:flex;justify-content:space-between;font-size:10px;font-family:'DM Mono',monospace;color:var(--text3);}
-.transport{padding:8px 16px 16px;display:flex;align-items:center;justify-content:center;gap:10px;}
+.transport{display:flex;align-items:center;justify-content:center;gap:8px;padding:0;flex-shrink:0;order:2;}
+@media(max-width:660px){.transport{padding:8px 16px 12px;order:0;}}
 .t-btn{min-width:46px;min-height:46px;border-radius:50%;background:none;border:1px solid var(--border2);color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;-webkit-tap-highlight-color:transparent;}
 .t-btn:active{transform:scale(.91);}
 .t-btn:hover:not(:disabled){border-color:var(--amber);color:var(--amber);}
@@ -192,6 +198,17 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 const fmt=s=>!s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
 const pitchLabel=s=>s===0?"±0":s>0?`+${s}`:`${s}`;
 
+/* ─── lamejs loader ──────────────────────────────────────── */
+const loadLame=()=>new Promise<any>((resolve,reject)=>{
+  if((window as any).lamejs){resolve((window as any).lamejs);return;}
+  const s=document.createElement('script');
+  s.src='https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
+  s.crossOrigin='anonymous';
+  s.onload=()=>resolve((window as any).lamejs);
+  s.onerror=reject;
+  document.head.appendChild(s);
+});
+
 const IconPrev=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>;
 const IconNext=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm2.5-6 5.5 3.9V8.1L8.5 12zM16 6h2v12h-2z"/></svg>;
 const IconPlay=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
@@ -208,6 +225,7 @@ export default function WorshipSetlist() {
   const [themeId,    setThemeId]    = useState(getSavedTheme);
   const [showThemes, setShowThemes] = useState(false);
   const [dragOverIdx,setDragOverIdx]= useState(null);
+  const [exportingId,setExportingId]= useState<string|null>(null);
 
   const fileInputRef    = useRef(null);
   const actxRef         = useRef(null);
@@ -489,6 +507,68 @@ export default function WorshipSetlist() {
     }
   };
 
+  const exportSong=useCallback(async(song)=>{
+    setExportingId(song.id);
+    try{
+      const tempoFactor=song.tempo/100;
+      const ab=song.audioBuffer;
+      const nc=ab.numberOfChannels;
+      const sr=ab.sampleRate;
+      /* Add 2 s headroom; the worklet returns false when done, rest is silence */
+      const outLen=Math.ceil(ab.length/tempoFactor)+sr*2;
+
+      /* Render offline through the same AudioWorklet */
+      const octx=new OfflineAudioContext(nc,outLen,sr);
+      await octx.audioWorklet.addModule('/pv-processor.js');
+      const node=new AudioWorkletNode(octx,'pv-proc',{
+        numberOfOutputs:1,outputChannelCount:[nc]
+      });
+      node.parameters.get('pitch').value=song.pitch;
+      node.parameters.get('tempo').value=tempoFactor;
+      const ch:Float32Array[]=[];
+      for(let c=0;c<nc;c++) ch.push(new Float32Array(ab.getChannelData(c)));
+      node.port.postMessage({t:'load',ch,s:0},ch.map(f=>f.buffer));
+      node.connect(octx.destination);
+
+      const rendered=await octx.startRendering();
+
+      /* Trim trailing silence */
+      const ch0=rendered.getChannelData(0);
+      let trimAt=rendered.length;
+      for(let i=rendered.length-1;i>=0;i--){
+        if(Math.abs(ch0[i])>1e-6){trimAt=Math.min(i+512,rendered.length);break;}
+      }
+
+      /* Encode to MP3 via lamejs */
+      const lame=await loadLame();
+      const enc=new lame.Mp3Encoder(nc,sr,128);
+      const BLOCK=1152;
+      const chunks:Uint8Array[]=[];
+      const leftF=rendered.getChannelData(0);
+      const rightF=nc>1?rendered.getChannelData(1):leftF;
+      const L=new Int16Array(BLOCK), R=new Int16Array(BLOCK);
+      for(let i=0;i<trimAt;i+=BLOCK){
+        const end=Math.min(i+BLOCK,trimAt), len=end-i;
+        for(let j=0;j<len;j++){
+          L[j]=Math.max(-32768,Math.min(32767,leftF[i+j]*32767));
+          R[j]=Math.max(-32768,Math.min(32767,rightF[i+j]*32767));
+        }
+        const c=enc.encodeBuffer(L.subarray(0,len),R.subarray(0,len));
+        if(c.length) chunks.push(new Uint8Array(c));
+      }
+      const tail=enc.flush(); if(tail.length) chunks.push(new Uint8Array(tail));
+
+      const blob=new Blob(chunks,{type:'audio/mpeg'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      const suffix=(song.pitch!==0?`_${song.pitch>0?'+':''}${song.pitch}st`:'')
+                  +(song.tempo!==100?`_${song.tempo}pct`:'');
+      a.href=url; a.download=`${song.name}${suffix}.mp3`;
+      a.click(); URL.revokeObjectURL(url);
+    }catch(e){console.error('Export failed:',e);alert('Export failed. See console for details.');}
+    finally{setExportingId(null);}
+  },[]);
+
   const loadFiles=async files=>{
     const ctx=getCtx();
     const loaded=await Promise.all(
@@ -642,6 +722,21 @@ export default function WorshipSetlist() {
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
                                 Play
                               </button>
+                              <button className="export-btn"
+                                disabled={exportingId===song.id}
+                                onClick={e=>{e.stopPropagation();exportSong(song);}}>
+                                {exportingId===song.id?(
+                                  <>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                    Exporting…
+                                  </>
+                                ):(
+                                  <>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    MP3
+                                  </>
+                                )}
+                              </button>
                             </div>
                           </div>
                         )}
@@ -683,9 +778,10 @@ export default function WorshipSetlist() {
               </div>
             </div>
           </div>
+        </div>
 
-          {/* Player */}
-          <div className="player-panel">
+        {/* Player — bottom bar */}
+        <div className="player-panel">
             <div className="now-playing">
               <div className="vinyl-wrap">
                 <div className={`vinyl${isPlaying?" spin":""}`}/>
@@ -729,7 +825,6 @@ export default function WorshipSetlist() {
               <button className="t-btn" onClick={handleNext} disabled={!currentSong||activeIdx>=songs.length-1}><IconNext/></button>
             </div>
           </div>
-        </div>
       </div>
     </>
   );
