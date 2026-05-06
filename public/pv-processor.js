@@ -130,8 +130,16 @@ class PVProcessor extends AudioWorkletProcessor {
     return Math.max(0, this._ow - HALF - this._or);
   }
 
-  /* Process one phase-vocoder frame and append to the ring buffer */
-  _frame(hs) {
+  /* Process one phase-vocoder frame and append to the ring buffer.
+   *
+   * Pitch shift is achieved by reading the input at HA×pf samples per frame
+   * (fractional, with linear interpolation) rather than the fixed HA.  This
+   * resamples the input — consuming it faster raises frequencies.  The phase
+   * accumulation formulas use the actual analysis hop (HA×pf) so they stay
+   * correct.  The synthesis hop hs = HA×pf/tempo controls output duration,
+   * giving the desired tempo independently of pitch.
+   */
+  _frame(hs, haAct) {
     /* Guard: stop if ring is almost full (prevents write from lapping read) */
     if (this._ow - this._or + N >= RSIZE) return;
 
@@ -142,23 +150,28 @@ class PVProcessor extends AudioWorkletProcessor {
       const lp = this._lp[c], sp = this._sp[c];
       const rb = this._rb[c];
 
-      /* Window + fill FFT input */
+      /* Window + fill FFT input (linear interpolation for fractional ip) */
       re.fill(0); im.fill(0);
       for (let i = 0; i < N; i++) {
-        const s = this._ip - HALF + i;
-        re[i] = (s >= 0 && s < this._il) ? inp[s] * W[i] : 0;
+        const sf  = this._ip - HALF + i;
+        const s0  = sf | 0;
+        const frc = sf - s0;
+        const v0  = (s0 >= 0 && s0 < this._il) ? inp[s0] : 0;
+        const v1  = (s0 + 1 < this._il)         ? inp[s0 + 1] : 0;
+        re[i] = (v0 + frc * (v1 - v0)) * W[i];
       }
 
       fft(re, im, false);
 
-      /* Phase accumulation */
+      /* Phase accumulation — use actual analysis hop haAct for both
+         the expected-phase-increment term and the unwrapping divisor */
       ore.fill(0); oim.fill(0);
       for (let k = 0; k <= HALF; k++) {
         const mag = Math.sqrt(re[k]*re[k] + im[k]*im[k]);
         const ph  = Math.atan2(im[k], re[k]);
-        let   dp  = ph - lp[k] - TP * k * HA / N;
+        let   dp  = ph - lp[k] - TP * k * haAct / N;
         dp -= TP * Math.round(dp / TP);
-        sp[k] += hs * (TP * k / N + dp / HA);
+        sp[k] += hs * (TP * k / N + dp / haAct);
         lp[k]  = ph;
         ore[k] = mag * Math.cos(sp[k]);
         oim[k] = mag * Math.sin(sp[k]);
@@ -179,7 +192,7 @@ class PVProcessor extends AudioWorkletProcessor {
       rw[(this._ow - HALF + i + RSIZE * 2) & RMASK] += W[i] * W[i];
     }
 
-    this._ip += HA;
+    this._ip += haAct;   // fractional advance — raises pitch when haAct > HA
     this._ow += hs;
   }
 
@@ -191,14 +204,18 @@ class PVProcessor extends AudioWorkletProcessor {
 
     const pitch = parameters.pitch[0] ?? 0;
     const tempo = parameters.tempo[0] ?? 1;
-    const pf = Math.pow(2, pitch / 12);
-    /* synthesis hop = analysis hop × (pitchFactor / tempoFactor) */
-    const hs = Math.max(1, Math.round(HA * pf / tempo));
+    const pf    = Math.pow(2, pitch / 12);
+
+    /* haAct: actual analysis hop — consuming input faster raises pitch.
+       hs:    synthesis hop — controls output length, setting tempo.
+       Net:   output_duration = input_duration / tempo  (independent of pf) */
+    const haAct = HA * pf;
+    const hs    = Math.max(1, Math.round(haAct / tempo));
 
     /* Fill ring ahead by TARGET samples (≈ 8 audio blocks) */
     const TARGET = bs * 8;
     while (this._safe() < TARGET && this._ip < this._il + HALF) {
-      this._frame(hs);
+      this._frame(hs, haAct);
     }
 
     /* Drain ring into output */
