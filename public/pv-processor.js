@@ -1,6 +1,13 @@
 /* ─── Real-time Phase-Vocoder AudioWorklet ────────────────────────────────────
-   Same algorithm as the offline pvStretchAsync, now streaming 128 samples/call.
-   Pitch and tempo are AudioParams → changes apply within the next audio chunk.
+   Two-stage processing (mirrors the original offline renderer):
+     1. Phase vocoder time-stretches by (pitchFactor / tempoFactor).
+        Analysis hop is always HA; synthesis hop = round(HA × pf / tf).
+     2. Ring-buffer output is read at a fractional rate of pitchFactor
+        (linear interpolation).  Reading faster raises frequencies.
+
+   Net result for arbitrary pitch (pf = 2^(semitones/12)) and tempo (tf):
+     output_duration = (pf / tf) / pf × input_duration = input_duration / tf ✓
+     output_pitch    = pf × input_pitch                                        ✓
    ─────────────────────────────────────────────────────────────────────────── */
 
 'use strict';
@@ -8,7 +15,7 @@
 const N = 1024, HA = 256, HALF = N >> 1;
 const TP = 2 * Math.PI;
 
-/* Hann window (pre-computed once at module load) */
+/* Hann window */
 const W = new Float32Array(N);
 for (let i = 0; i < N; i++) W[i] = 0.5 * (1 - Math.cos(TP * i / (N - 1)));
 
@@ -44,10 +51,7 @@ function fft(re, im, inv) {
   if (inv) { const s = 1 / n; for (let i = 0; i < n; i++) { re[i] *= s; im[i] *= s; } }
 }
 
-/*
- * Ring buffer layout (power-of-2 for fast modulo via bitwise AND)
- * 2^19 = 524 288 samples ≈ 11.9 s @ 44.1 kHz — ample for any stretch factor.
- */
+/* Ring buffer — 2^19 = 524 288 samples ≈ 11.9 s @ 44.1 kHz */
 const RBITS = 19;
 const RSIZE = 1 << RBITS;
 const RMASK = RSIZE - 1;
@@ -55,10 +59,8 @@ const RMASK = RSIZE - 1;
 class PVProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors() {
     return [
-      /* pitchSemitones: −12..+12 semitones, automatable */
       { name: 'pitch', defaultValue: 0, minValue: -24, maxValue: 24,
         automationRate: 'k-rate' },
-      /* tempo: fraction (0.5 = 50%, 1.5 = 150%), automatable */
       { name: 'tempo', defaultValue: 1, minValue: 0.25, maxValue: 4,
         automationRate: 'k-rate' },
     ];
@@ -66,39 +68,35 @@ class PVProcessor extends AudioWorkletProcessor {
 
   constructor() {
     super();
-    /* Audio data — transferred from main thread on 'load' */
-    this._ch  = null;   // Float32Array[] one per channel
-    this._nc  = 0;      // number of channels
-    this._il  = 0;      // input length (samples)
-    this._ip  = 0;      // input read position (int)
+    this._ch  = null;
+    this._nc  = 0;
+    this._il  = 0;
+    this._ip  = 0;   // input read position (integer — HA is always integer)
 
-    /* Phase-vocoder state per channel */
-    this._lp  = null;   // last phase  [nc × N]
-    this._sp  = null;   // synth phase [nc × N]
+    this._lp  = null;
+    this._sp  = null;
 
-    /* Output ring buffer per channel + shared normalisation window */
-    this._rb  = null;   // Float32Array[] [nc × RSIZE]
-    this._rw  = null;   // Float32Array   [RSIZE]  (Hann² accumulator)
-    this._ow  = 0;      // linear write counter (output frames produced)
-    this._or  = 0;      // linear read  counter (output frames consumed)
+    this._rb  = null;
+    this._rw  = null;
+    this._ow  = 0;   // linear ring-write counter
+    this._or  = 0;   // linear ring-read  counter (integer part)
+    this._orf = 0;   // fractional part of ring-read (for pitch resampling)
 
-    /* Reusable FFT scratch buffers (avoids per-frame allocations) */
     this._re  = new Float32Array(N);
     this._im  = new Float32Array(N);
     this._ore = new Float32Array(N);
     this._oim = new Float32Array(N);
 
-    this._on     = false;  // processor is active
-    this._ended  = false;  // 'ended' event already sent
+    this._on    = false;
+    this._ended = false;
 
     this.port.onmessage = ({ data: d }) => {
       if (d.t === 'load') {
         this._nc = d.ch.length;
         this._il = d.ch[0].length;
         this._ch = d.ch;
-        this._ip = d.s | 0;          // start sample (optional seek)
-        this._ow = 0;
-        this._or = 0;
+        this._ip = d.s | 0;
+        this._ow = 0; this._or = 0; this._orf = 0;
         this._rb  = Array.from({ length: this._nc }, () => new Float32Array(RSIZE));
         this._rw  = new Float32Array(RSIZE);
         this._lp  = Array.from({ length: this._nc }, () => new Float32Array(N));
@@ -109,7 +107,7 @@ class PVProcessor extends AudioWorkletProcessor {
       } else if (d.t === 'seek') {
         if (!this._ch) return;
         this._ip = d.s | 0;
-        this._ow = 0; this._or = 0;
+        this._ow = 0; this._or = 0; this._orf = 0;
         this._rb.forEach(r => r.fill(0));
         this._rw.fill(0);
         this._lp.forEach(a => a.fill(0));
@@ -123,25 +121,15 @@ class PVProcessor extends AudioWorkletProcessor {
     };
   }
 
-  /* Number of output samples that are fully committed (safe to read) */
+  /* Committed ring samples (fully overlap-added, safe to drain) */
   _safe() {
-    /* After overlap-add, samples older than (ow - HALF) are no longer
-       touched by future frames, so they're safe to drain. */
     return Math.max(0, this._ow - HALF - this._or);
   }
 
-  /* Process one phase-vocoder frame and append to the ring buffer.
-   *
-   * Pitch shift is achieved by reading the input at HA×pf samples per frame
-   * (fractional, with linear interpolation) rather than the fixed HA.  This
-   * resamples the input — consuming it faster raises frequencies.  The phase
-   * accumulation formulas use the actual analysis hop (HA×pf) so they stay
-   * correct.  The synthesis hop hs = HA×pf/tempo controls output duration,
-   * giving the desired tempo independently of pitch.
-   */
-  _frame(hs, haAct) {
-    /* Guard: stop if ring is almost full (prevents write from lapping read) */
-    if (this._ow - this._or + N >= RSIZE) return;
+  /* Phase-vocoder frame: time-stretch only (pitch preserved).
+     Synthesis hop hs = round(HA × pf / tf) controls stretch ratio. */
+  _frame(hs) {
+    if (this._ow - this._or + N >= RSIZE) return;  // ring nearly full
 
     for (let c = 0; c < this._nc; c++) {
       const inp = this._ch[c];
@@ -150,28 +138,21 @@ class PVProcessor extends AudioWorkletProcessor {
       const lp = this._lp[c], sp = this._sp[c];
       const rb = this._rb[c];
 
-      /* Window + fill FFT input (linear interpolation for fractional ip) */
       re.fill(0); im.fill(0);
       for (let i = 0; i < N; i++) {
-        const sf  = this._ip - HALF + i;
-        const s0  = sf | 0;
-        const frc = sf - s0;
-        const v0  = (s0 >= 0 && s0 < this._il) ? inp[s0] : 0;
-        const v1  = (s0 + 1 < this._il)         ? inp[s0 + 1] : 0;
-        re[i] = (v0 + frc * (v1 - v0)) * W[i];
+        const s = this._ip - HALF + i;
+        re[i] = (s >= 0 && s < this._il) ? inp[s] * W[i] : 0;
       }
 
       fft(re, im, false);
 
-      /* Phase accumulation — use actual analysis hop haAct for both
-         the expected-phase-increment term and the unwrapping divisor */
       ore.fill(0); oim.fill(0);
       for (let k = 0; k <= HALF; k++) {
         const mag = Math.sqrt(re[k]*re[k] + im[k]*im[k]);
         const ph  = Math.atan2(im[k], re[k]);
-        let   dp  = ph - lp[k] - TP * k * haAct / N;
+        let   dp  = ph - lp[k] - TP * k * HA / N;
         dp -= TP * Math.round(dp / TP);
-        sp[k] += hs * (TP * k / N + dp / haAct);
+        sp[k] += hs * (TP * k / N + dp / HA);
         lp[k]  = ph;
         ore[k] = mag * Math.cos(sp[k]);
         oim[k] = mag * Math.sin(sp[k]);
@@ -180,19 +161,17 @@ class PVProcessor extends AudioWorkletProcessor {
 
       fft(ore, oim, true);
 
-      /* Overlap-add into ring */
       for (let i = 0; i < N; i++) {
         rb[(this._ow - HALF + i + RSIZE * 2) & RMASK] += ore[i] * W[i];
       }
     }
 
-    /* Normalisation window (identical for every channel) */
     const rw = this._rw;
     for (let i = 0; i < N; i++) {
       rw[(this._ow - HALF + i + RSIZE * 2) & RMASK] += W[i] * W[i];
     }
 
-    this._ip += haAct;   // fractional advance — raises pitch when haAct > HA
+    this._ip += HA;
     this._ow += hs;
   }
 
@@ -206,41 +185,61 @@ class PVProcessor extends AudioWorkletProcessor {
     const tempo = parameters.tempo[0] ?? 1;
     const pf    = Math.pow(2, pitch / 12);
 
-    /* haAct: actual analysis hop — consuming input faster raises pitch.
-       hs:    synthesis hop — controls output length, setting tempo.
-       Net:   output_duration = input_duration / tempo  (independent of pf) */
-    const haAct = HA * pf;
-    const hs    = Math.max(1, Math.round(haAct / tempo));
+    /* Synthesis hop: phase vocoder stretches by pf/tempo.
+       After resampling at rate pf the duration becomes 1/tempo × original. */
+    const hs = Math.max(1, Math.round(HA * pf / tempo));
 
-    /* Fill ring ahead by TARGET samples (≈ 8 audio blocks) */
-    const TARGET = bs * 8;
+    /* Fill ring: we consume pf ring samples per output sample,
+       so target lookahead is bs × pf × 8. */
+    const TARGET = Math.min(Math.ceil(bs * pf) * 8, RSIZE >> 1);
     while (this._safe() < TARGET && this._ip < this._il + HALF) {
-      this._frame(hs, haAct);
+      this._frame(hs);
     }
 
-    /* Drain ring into output */
+    /* ── Drain with fractional resampling (pitch shift) ──
+       Reading the ring at pf× speed raises frequencies by pf.
+       _orf tracks the sub-sample fractional offset. */
     const avail = this._safe();
-    const read  = Math.min(avail, bs);
+    /* Max output samples we can produce: need (i*pf + _orf + 1) < avail */
+    const canProduce = pf <= 1
+      ? avail
+      : Math.max(0, Math.floor((avail - 1 - this._orf) / pf));
+    const read = Math.min(canProduce, bs);
 
     for (let c = 0; c < out.length; c++) {
       const rb = this._rb[Math.min(c, this._nc - 1)];
       const o  = out[c];
       for (let i = 0; i < read; i++) {
-        const pos = (this._or + i) & RMASK;
-        const w   = this._rw[pos];
-        o[i] = w > 1e-8 ? rb[pos] / w : 0;
-        rb[pos] = 0;
+        const fp   = this._orf + i * pf;
+        const i0   = fp | 0;
+        const frc  = fp - i0;
+        const pos0 = (this._or + i0)     & RMASK;
+        const pos1 = (this._or + i0 + 1) & RMASK;
+        const w0   = this._rw[pos0], w1 = this._rw[pos1];
+        const s0   = w0 > 1e-8 ? rb[pos0] / w0 : 0;
+        const s1   = w1 > 1e-8 ? rb[pos1] / w1 : 0;
+        o[i] = s0 + frc * (s1 - s0);
       }
       for (let i = read; i < bs; i++) o[i] = 0;
     }
 
-    /* Clear normalisation window once (after all channels read) */
-    const rw = this._rw;
-    for (let i = 0; i < read; i++) rw[(this._or + i) & RMASK] = 0;
-    this._or += read;
+    /* Advance the fractional ring pointer and clear consumed samples */
+    if (read > 0) {
+      const totalFrac = this._orf + read * pf;
+      const intAdv    = totalFrac | 0;
+      this._orf       = totalFrac - intAdv;
+
+      for (let c = 0; c < this._nc; c++) {
+        const rb = this._rb[c];
+        for (let i = 0; i < intAdv; i++) rb[(this._or + i) & RMASK] = 0;
+      }
+      const rw = this._rw;
+      for (let i = 0; i < intAdv; i++) rw[(this._or + i) & RMASK] = 0;
+      this._or += intAdv;
+    }
 
     /* Signal end-of-audio */
-    if (this._ip >= this._il + HALF && avail === 0) {
+    if (this._ip >= this._il + HALF && this._safe() === 0) {
       if (!this._ended) {
         this._ended = true;
         this.port.postMessage({ t: 'ended' });
