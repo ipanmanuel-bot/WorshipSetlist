@@ -136,6 +136,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .play-now-btn:hover:not(:disabled){background:var(--amber2);}
 .play-now-btn:active:not(:disabled){transform:scale(.97);}
 .play-now-btn:disabled{opacity:.5;cursor:not-allowed;}
+.export-btn{display:flex;align-items:center;justify-content:center;gap:6px;background:var(--bg3);color:var(--text2);border:1px solid var(--border2);border-radius:8px;padding:10px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;min-height:42px;white-space:nowrap;-webkit-tap-highlight-color:transparent;}
+.export-btn:hover:not(:disabled){border-color:var(--amber);color:var(--amber);}
+.export-btn:active:not(:disabled){transform:scale(.96);}
+.export-btn:disabled{opacity:.45;cursor:not-allowed;}
 .drop-zone{margin:8px;border:1px dashed var(--border2);border-radius:10px;padding:22px 14px;text-align:center;color:var(--text3);transition:all .2s;cursor:pointer;}
 .drop-zone.over{border-color:var(--amber);color:var(--amber);background:rgba(212,136,26,.05);}
 .drop-icon{font-size:24px;opacity:.4;margin-bottom:6px;}
@@ -194,6 +198,17 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 const fmt=s=>!s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
 const pitchLabel=s=>s===0?"±0":s>0?`+${s}`:`${s}`;
 
+/* ─── lamejs loader ──────────────────────────────────────── */
+const loadLame=()=>new Promise<any>((resolve,reject)=>{
+  if((window as any).lamejs){resolve((window as any).lamejs);return;}
+  const s=document.createElement('script');
+  s.src='https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
+  s.crossOrigin='anonymous';
+  s.onload=()=>resolve((window as any).lamejs);
+  s.onerror=reject;
+  document.head.appendChild(s);
+});
+
 const IconPrev=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>;
 const IconNext=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm2.5-6 5.5 3.9V8.1L8.5 12zM16 6h2v12h-2z"/></svg>;
 const IconPlay=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
@@ -210,6 +225,7 @@ export default function WorshipSetlist() {
   const [themeId,    setThemeId]    = useState(getSavedTheme);
   const [showThemes, setShowThemes] = useState(false);
   const [dragOverIdx,setDragOverIdx]= useState(null);
+  const [exportingId,setExportingId]= useState<string|null>(null);
 
   const fileInputRef    = useRef(null);
   const actxRef         = useRef(null);
@@ -491,6 +507,68 @@ export default function WorshipSetlist() {
     }
   };
 
+  const exportSong=useCallback(async(song)=>{
+    setExportingId(song.id);
+    try{
+      const tempoFactor=song.tempo/100;
+      const ab=song.audioBuffer;
+      const nc=ab.numberOfChannels;
+      const sr=ab.sampleRate;
+      /* Add 2 s headroom; the worklet returns false when done, rest is silence */
+      const outLen=Math.ceil(ab.length/tempoFactor)+sr*2;
+
+      /* Render offline through the same AudioWorklet */
+      const octx=new OfflineAudioContext(nc,outLen,sr);
+      await octx.audioWorklet.addModule('/pv-processor.js');
+      const node=new AudioWorkletNode(octx,'pv-proc',{
+        numberOfOutputs:1,outputChannelCount:[nc]
+      });
+      node.parameters.get('pitch').value=song.pitch;
+      node.parameters.get('tempo').value=tempoFactor;
+      const ch:Float32Array[]=[];
+      for(let c=0;c<nc;c++) ch.push(new Float32Array(ab.getChannelData(c)));
+      node.port.postMessage({t:'load',ch,s:0},ch.map(f=>f.buffer));
+      node.connect(octx.destination);
+
+      const rendered=await octx.startRendering();
+
+      /* Trim trailing silence */
+      const ch0=rendered.getChannelData(0);
+      let trimAt=rendered.length;
+      for(let i=rendered.length-1;i>=0;i--){
+        if(Math.abs(ch0[i])>1e-6){trimAt=Math.min(i+512,rendered.length);break;}
+      }
+
+      /* Encode to MP3 via lamejs */
+      const lame=await loadLame();
+      const enc=new lame.Mp3Encoder(nc,sr,128);
+      const BLOCK=1152;
+      const chunks:Uint8Array[]=[];
+      const leftF=rendered.getChannelData(0);
+      const rightF=nc>1?rendered.getChannelData(1):leftF;
+      const L=new Int16Array(BLOCK), R=new Int16Array(BLOCK);
+      for(let i=0;i<trimAt;i+=BLOCK){
+        const end=Math.min(i+BLOCK,trimAt), len=end-i;
+        for(let j=0;j<len;j++){
+          L[j]=Math.max(-32768,Math.min(32767,leftF[i+j]*32767));
+          R[j]=Math.max(-32768,Math.min(32767,rightF[i+j]*32767));
+        }
+        const c=enc.encodeBuffer(L.subarray(0,len),R.subarray(0,len));
+        if(c.length) chunks.push(new Uint8Array(c));
+      }
+      const tail=enc.flush(); if(tail.length) chunks.push(new Uint8Array(tail));
+
+      const blob=new Blob(chunks,{type:'audio/mpeg'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      const suffix=(song.pitch!==0?`_${song.pitch>0?'+':''}${song.pitch}st`:'')
+                  +(song.tempo!==100?`_${song.tempo}pct`:'');
+      a.href=url; a.download=`${song.name}${suffix}.mp3`;
+      a.click(); URL.revokeObjectURL(url);
+    }catch(e){console.error('Export failed:',e);alert('Export failed. See console for details.');}
+    finally{setExportingId(null);}
+  },[]);
+
   const loadFiles=async files=>{
     const ctx=getCtx();
     const loaded=await Promise.all(
@@ -643,6 +721,21 @@ export default function WorshipSetlist() {
                                 onClick={e=>{e.stopPropagation();pausedAtRef.current=0;playFrom(idx,0);}}>
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
                                 Play
+                              </button>
+                              <button className="export-btn"
+                                disabled={exportingId===song.id}
+                                onClick={e=>{e.stopPropagation();exportSong(song);}}>
+                                {exportingId===song.id?(
+                                  <>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                                    Exporting…
+                                  </>
+                                ):(
+                                  <>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    MP3
+                                  </>
+                                )}
                               </button>
                             </div>
                           </div>
