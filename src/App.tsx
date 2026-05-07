@@ -973,11 +973,11 @@ export default function WorshipSetlist() {
                 <div className="np-info">
                   <div className="np-eyebrow">
                     Now Playing · {playingIdx+1}/{songs.length}
-                    {keyLabel(currentSong)&&<> · <span style={{color:'var(--amber3)'}}>{keyLabel(currentSong)}</span></>}
+                    {keyLabel(currentSong)&&<> · <span style={{color:'var(--amber3)'}}>Key: {keyLabel(currentSong)}</span></>}
                   </div>
                   <div className="np-title">{currentSong.name}</div>
                   <div className="np-badges">
-                    {keyLabel(currentSong)&&<div className="np-badge" style={{color:'var(--amber3)',borderColor:'var(--amber)'}}>{keyLabel(currentSong)}</div>}
+                    {keyLabel(currentSong)&&<div className="np-badge" style={{color:'var(--amber3)',borderColor:'var(--amber)'}}>Key: {keyLabel(currentSong)}</div>}
                     <div className="np-badge">{pitchLabel(currentSong.pitch)} semitones</div>
                     <div className="np-badge">{currentSong.tempo}% tempo</div>
                   </div>
