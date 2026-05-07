@@ -275,7 +275,7 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
 
   /* Mix to mono, limit to first 60 s */
   const sr=audioBuffer.sampleRate;
-  const maxSamples=Math.min(audioBuffer.length,sr*60);
+  const maxSamples=audioBuffer.length; /* analyse full song — some songs open on IV or vi */
   const mono=new Float32Array(maxSamples);
   const nc=audioBuffer.numberOfChannels;
   for(let c=0;c<nc;c++){
@@ -291,27 +291,42 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
   let frameCount=0;
 
   const N2=CHROMA_N>>1;
-  const mag=new Float64Array(N2+1); /* reused across frames */
+  const mag=new Float64Array(N2+1);
+  /* Find spectral peaks in 65 Hz – 5600 Hz (8th harmonic of 700 Hz max fundamental) */
+  const kLo=Math.max(2,Math.ceil(65*CHROMA_N/sr));
+  const kHi=Math.min(N2-1,Math.floor(5600*CHROMA_N/sr));
 
   for(let pos=0;pos+CHROMA_N<=maxSamples;pos+=hop){
     for(let i=0;i<CHROMA_N;i++){re[i]=mono[pos+i]*CHROMA_WIN[i];im[i]=0;}
     _fft(re,im,false);
     for(let k=0;k<=N2;k++) mag[k]=Math.sqrt(re[k]*re[k]+im[k]*im[k]);
 
-    /* Harmonic Product Spectrum chroma (65–700 Hz):
-       hps = mag[k] × mag[2k] × mag[3k]
-       True fundamentals score high; harmonics of lower notes score low
-       because their own "harmonics" are much weaker. */
+    /* Frame max for normalization */
+    let mxf=0;
+    for(let k=kLo;k<=kHi;k++) if(mag[k]>mxf) mxf=mag[k];
+    if(mxf<1e-10){frameCount++;continue;}
+
+    /* HPCP — Harmonic Pitch Class Profile (Gómez 2006):
+       For each spectral peak, treat it as the h-th harmonic of a lower
+       fundamental. Each peak votes for pitch classes of all possible
+       fundamentals with weight 1/h². A cosine window handles slight detuning.
+       This is how Essentia (used by Tunebat) computes its key input. */
     const fc=new Array(12).fill(0);
-    for(let k=1;k<=N2;k++){
+    for(let k=kLo;k<=kHi;k++){
+      if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue; /* local max only */
+      const m=mag[k]/mxf;
+      if(m<0.01) continue; /* below noise threshold */
       const f=k*sr/CHROMA_N;
-      if(f<65||f>700) continue;
-      const k2=k<<1, k3=k*3;
-      const hps=mag[k] * mag[k2] * (k3<=N2?mag[k3]:1);
-      if(hps<1e-30) continue;
-      const midi=69+12*Math.log2(f/440);
-      const pc=((Math.round(midi)%12)+12)%12;
-      fc[pc]+=Math.log(1+hps);
+      for(let h=1;h<=8;h++){
+        const ff=f/h; /* candidate fundamental */
+        if(ff<65||ff>700) continue;
+        const midi=69+12*Math.log2(ff/440);
+        const pc=((Math.round(midi)%12)+12)%12;
+        const dev=midi-Math.round(midi); /* semitone deviation */
+        const cw=Math.cos(Math.PI*dev); /* cosine window ±0.5 st */
+        if(cw<=0) continue;
+        fc[pc]+=m*cw*cw/(h*h);
+      }
     }
 
     /* Normalize this frame before accumulating (equal weight per time-slice) */
