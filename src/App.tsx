@@ -218,6 +218,7 @@ const IconPlaySm=()=><svg width="10" height="10" viewBox="0 0 24 24" fill="curre
 export default function WorshipSetlist() {
   const [songs,      setSongs]      = useState([]);
   const [activeIdx,  setActiveIdx]  = useState(null);
+  const [playingIdx, setPlayingIdx] = useState(null);
   const [isPlaying,  setIsPlaying]  = useState(false);
   const [progress,   setProgress]   = useState(0);
   const [duration,   setDuration]   = useState(0);
@@ -242,12 +243,14 @@ export default function WorshipSetlist() {
   const floatRef        = useRef(null);
   const touchSrcIdx     = useRef(null);
 
-  const songsRef     = useRef(songs);
-  const activeIdxRef = useRef(activeIdx);
-  const isPlayingRef = useRef(isPlaying);
-  useEffect(()=>{ songsRef.current=songs; },         [songs]);
-  useEffect(()=>{ activeIdxRef.current=activeIdx; }, [activeIdx]);
-  useEffect(()=>{ isPlayingRef.current=isPlaying; }, [isPlaying]);
+  const songsRef      = useRef(songs);
+  const activeIdxRef  = useRef(activeIdx);
+  const playingIdxRef = useRef(playingIdx);
+  const isPlayingRef  = useRef(isPlaying);
+  useEffect(()=>{ songsRef.current=songs; },           [songs]);
+  useEffect(()=>{ activeIdxRef.current=activeIdx; },   [activeIdx]);
+  useEffect(()=>{ playingIdxRef.current=playingIdx; }, [playingIdx]);
+  useEffect(()=>{ isPlayingRef.current=isPlaying; },   [isPlaying]);
 
   // Apply theme
   useEffect(()=>{
@@ -354,9 +357,9 @@ export default function WorshipSetlist() {
       node.port.onmessage=({data})=>{
         if(data.t!=='ended'||genRef.current!==gen) return;
         if(!isPlayingRef.current) return;
-        const next=activeIdxRef.current+1;
-        if(next<songsRef.current.length){setActiveIdx(next);pausedAtRef.current=0;playFrom(next,0);}
-        else{setIsPlaying(false);setProgress(0);pausedAtRef.current=0;}
+        const next=playingIdxRef.current+1;
+        if(next<songsRef.current.length){setActiveIdx(next);setPlayingIdx(next);pausedAtRef.current=0;playFrom(next,0);}
+        else{setIsPlaying(false);setPlayingIdx(null);setProgress(0);pausedAtRef.current=0;}
       };
 
       node.connect(ctx.destination);
@@ -371,7 +374,7 @@ export default function WorshipSetlist() {
         if(el<durationRef.current) rafRef.current=requestAnimationFrame(tick);
       };
       rafRef.current=requestAnimationFrame(tick);
-      setActiveIdx(idx); setIsPlaying(true);
+      setPlayingIdx(idx); setActiveIdx(idx); setIsPlaying(true);
     }catch(e){console.error(e);}
     finally{busyRef.current=false;}
   },[]);
@@ -381,21 +384,21 @@ export default function WorshipSetlist() {
     if(isPlaying){
       pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
       stopSource(); setIsPlaying(false);
-    } else { playFrom(activeIdx??0,pausedAtRef.current); }
+    } else { playFrom(playingIdx??activeIdx??0,pausedAtRef.current); }
   };
 
-  const handlePrev=()=>{if(activeIdx!==null){pausedAtRef.current=0;playFrom(Math.max(0,activeIdx-1),0);}};
-  const handleNext=()=>{if(activeIdx!==null&&activeIdx+1<songs.length){pausedAtRef.current=0;playFrom(activeIdx+1,0);}};
+  const handlePrev=()=>{const pi=playingIdx??activeIdx;if(pi!==null){pausedAtRef.current=0;playFrom(Math.max(0,pi-1),0);}};
+  const handleNext=()=>{const pi=playingIdx??activeIdx;if(pi!==null&&pi+1<songs.length){pausedAtRef.current=0;playFrom(pi+1,0);}};
 
   const handleProgressClick=e=>{
-    if(activeIdx===null||duration===0) return;
+    if(playingIdx===null||duration===0) return;
     const rect=e.currentTarget.getBoundingClientRect();
     const ratio=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
-    pausedAtRef.current=ratio*duration; playFrom(activeIdx,pausedAtRef.current);
+    pausedAtRef.current=ratio*duration; playFrom(playingIdx,pausedAtRef.current);
   };
 
   const handleScrubStart=e=>{
-    if(activeIdx===null||duration===0) return;
+    if(playingIdx===null||duration===0) return;
     e.preventDefault();
     const bar=e.currentTarget;
     const wasPlaying=isPlayingRef.current;
@@ -411,7 +414,7 @@ export default function WorshipSetlist() {
       document.removeEventListener('mouseup',onUp);
       document.removeEventListener('touchmove',onMove);
       document.removeEventListener('touchend',onUp);
-      if(wasPlaying) playFrom(activeIdx,pausedAtRef.current);
+      if(wasPlaying) playFrom(playingIdx,pausedAtRef.current);
     };
     document.addEventListener('mousemove',onMove);
     document.addEventListener('mouseup',onUp);
@@ -442,6 +445,9 @@ export default function WorshipSetlist() {
       if(activeIdx===from) setActiveIdx(to);
       else if(activeIdx>from&&activeIdx<=to) setActiveIdx(i=>i-1);
       else if(activeIdx<from&&activeIdx>=to) setActiveIdx(i=>i+1);
+      if(playingIdx===from) setPlayingIdx(to);
+      else if(playingIdx>from&&playingIdx<=to) setPlayingIdx(i=>i-1);
+      else if(playingIdx<from&&playingIdx>=to) setPlayingIdx(i=>i+1);
       return next;
     });
   };
@@ -477,6 +483,9 @@ export default function WorshipSetlist() {
       if(activeIdx===from) setActiveIdx(to);
       else if(activeIdx>from&&activeIdx<=to) setActiveIdx(i=>i-1);
       else if(activeIdx<from&&activeIdx>=to) setActiveIdx(i=>i+1);
+      if(playingIdx===from) setPlayingIdx(to);
+      else if(playingIdx>from&&playingIdx<=to) setPlayingIdx(i=>i-1);
+      else if(playingIdx<from&&playingIdx>=to) setPlayingIdx(i=>i+1);
       return next;
     });
   };
@@ -493,7 +502,7 @@ export default function WorshipSetlist() {
       return updated;
     }));
     /* If this song is currently playing, update worklet AudioParams instantly */
-    const isActive=songsRef.current[activeIdxRef.current]?.id===id;
+    const isActive=songsRef.current[playingIdxRef.current]?.id===id;
     if(isActive&&workletNodeRef.current){
       const song=songsRef.current.find(s=>s.id===id);
       if(!song) return;
@@ -598,13 +607,15 @@ export default function WorshipSetlist() {
     setSongs(prev=>{
       const ri=prev.findIndex(s=>s.id===id);
       const next=prev.filter(s=>s.id!==id);
-      if(activeIdx===ri){stopSource();setIsPlaying(false);setActiveIdx(null);setProgress(0);}
+      if(activeIdx===ri){setActiveIdx(null);}
       else if(activeIdx>ri) setActiveIdx(i=>i-1);
+      if(playingIdx===ri){stopSource();setIsPlaying(false);setPlayingIdx(null);setProgress(0);}
+      else if(playingIdx>ri) setPlayingIdx(i=>i-1);
       return next;
     });
   };
 
-  const currentSong=activeIdx!==null?songs[activeIdx]:null;
+  const currentSong=playingIdx!==null?songs[playingIdx]:null;
   const pct=duration>0?(progress/duration)*100:0;
 
   return(
@@ -675,7 +686,7 @@ export default function WorshipSetlist() {
                             onTouchEnd={handleTouchEnd}>
                             <span/><span/><span/>
                           </div>
-                          <div className="song-num">{isActive&&isPlaying?<IconPlaySm/>:idx+1}</div>
+                          <div className="song-num">{idx===playingIdx&&isPlaying?<IconPlaySm/>:idx+1}</div>
                           <span className="song-name" title={song.name}>{song.name}</span>
                           <div className="song-badges">
                             <span className={`badge${song.pitch===0?" neutral":""}`}>{pitchLabel(song.pitch)}st</span>
@@ -789,7 +800,7 @@ export default function WorshipSetlist() {
               </div>
               {currentSong?(
                 <div className="np-info">
-                  <div className="np-eyebrow">Now Playing · {activeIdx+1}/{songs.length}</div>
+                  <div className="np-eyebrow">Now Playing · {playingIdx+1}/{songs.length}</div>
                   <div className="np-title">{currentSong.name}</div>
                   <div className="np-badges">
                     <div className="np-badge">{pitchLabel(currentSong.pitch)} semitones</div>
@@ -816,13 +827,13 @@ export default function WorshipSetlist() {
             </div>
 
             <div className="transport">
-              <button className="t-btn" onClick={handlePrev} disabled={!currentSong||activeIdx===0}><IconPrev/></button>
+              <button className="t-btn" onClick={handlePrev} disabled={!currentSong||playingIdx===0}><IconPrev/></button>
               <button className="t-btn play-btn"
                 onClick={songs.length>0?handlePlayPause:undefined}
                 disabled={songs.length===0}>
                 {isPlaying?<IconPause/>:<IconPlay/>}
               </button>
-              <button className="t-btn" onClick={handleNext} disabled={!currentSong||activeIdx>=songs.length-1}><IconNext/></button>
+              <button className="t-btn" onClick={handleNext} disabled={!currentSong||playingIdx>=songs.length-1}><IconNext/></button>
             </div>
           </div>
       </div>
