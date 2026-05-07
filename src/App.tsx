@@ -280,11 +280,10 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
   const nc=audioBuffer.numberOfChannels;
   for(let c=0;c<nc;c++){
     const ch=audioBuffer.getChannelData(c);
-    for(let i=0;i<maxSamples;i++) mono[i]+=ch[i];
+    for(let i=0;i<maxSamples;i++) mono[i]+=ch[i]/nc;
   }
-  if(nc>1) for(let i=0;i<maxSamples;i++) mono[i]/=nc;
 
-  /* Build chromagram */
+  /* Build chromagram — normalize per frame so each time-slice counts equally */
   const chroma=new Array(12).fill(0);
   const re=new Float64Array(CHROMA_N);
   const im=new Float64Array(CHROMA_N);
@@ -294,15 +293,22 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
   for(let pos=0;pos+CHROMA_N<=maxSamples;pos+=hop){
     for(let i=0;i<CHROMA_N;i++){re[i]=mono[pos+i]*CHROMA_WIN[i];im[i]=0;}
     _fft(re,im,false);
+
+    /* Log-magnitude chroma — C2 (65 Hz) to C7 (2093 Hz) */
+    const fc=new Array(12).fill(0);
     for(let k=1;k<=CHROMA_N>>1;k++){
       const f=k*sr/CHROMA_N;
-      if(f<30||f>5000) continue;
+      if(f<65||f>2100) continue;
       const midi=69+12*Math.log2(f/440);
       const pc=((Math.round(midi)%12)+12)%12;
-      chroma[pc]+=re[k]*re[k]+im[k]*im[k];
+      fc[pc]+=Math.log(1+Math.sqrt(re[k]*re[k]+im[k]*im[k]));
     }
+
+    /* Normalize this frame before accumulating (equal weight per time-slice) */
+    const ft=fc.reduce((a,b)=>a+b,0);
+    if(ft>1e-6) for(let i=0;i<12;i++) chroma[i]+=fc[i]/ft;
+
     frameCount++;
-    /* yield every 64 frames to keep UI responsive */
     if(frameCount%64===0) await new Promise(r=>setTimeout(r,0));
   }
 
