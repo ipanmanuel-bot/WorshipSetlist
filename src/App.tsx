@@ -290,18 +290,28 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
   const hop=CHROMA_N>>1;
   let frameCount=0;
 
+  const N2=CHROMA_N>>1;
+  const mag=new Float64Array(N2+1); /* reused across frames */
+
   for(let pos=0;pos+CHROMA_N<=maxSamples;pos+=hop){
     for(let i=0;i<CHROMA_N;i++){re[i]=mono[pos+i]*CHROMA_WIN[i];im[i]=0;}
     _fft(re,im,false);
+    for(let k=0;k<=N2;k++) mag[k]=Math.sqrt(re[k]*re[k]+im[k]*im[k]);
 
-    /* Log-magnitude chroma — C2 (65 Hz) to C7 (2093 Hz) */
+    /* Harmonic Product Spectrum chroma (65–700 Hz):
+       hps = mag[k] × mag[2k] × mag[3k]
+       True fundamentals score high; harmonics of lower notes score low
+       because their own "harmonics" are much weaker. */
     const fc=new Array(12).fill(0);
-    for(let k=1;k<=CHROMA_N>>1;k++){
+    for(let k=1;k<=N2;k++){
       const f=k*sr/CHROMA_N;
-      if(f<65||f>2100) continue;
+      if(f<65||f>700) continue;
+      const k2=k<<1, k3=k*3;
+      const hps=mag[k] * mag[k2] * (k3<=N2?mag[k3]:1);
+      if(hps<1e-30) continue;
       const midi=69+12*Math.log2(f/440);
       const pc=((Math.round(midi)%12)+12)%12;
-      fc[pc]+=Math.log(1+Math.sqrt(re[k]*re[k]+im[k]*im[k]));
+      fc[pc]+=Math.log(1+hps);
     }
 
     /* Normalize this frame before accumulating (equal weight per time-slice) */
@@ -856,7 +866,7 @@ export default function WorshipSetlist() {
                           <span className="song-name" title={song.name}>{song.name}</span>
                           <div className="song-badges">
                             {keyLabel(song)?(
-                              <span className="badge key">{keyLabel(song)}</span>
+                              <span className="badge key">Key: {keyLabel(song)}</span>
                             ):keyDetecting.has(song.id)?(
                               <span className="badge neutral" style={{fontSize:9}}>key…</span>
                             ):null}
