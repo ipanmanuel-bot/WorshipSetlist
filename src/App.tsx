@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
 /* ─── IndexedDB persistence ──────────────────────────────── */
-const DB_NAME='worship-setlist', DB_STORE='songs', DB_VER=3;
+const DB_NAME='worship-setlist', DB_STORE='songs', DB_VER=4;
 const openDB=()=>new Promise((res,rej)=>{
   const req=indexedDB.open(DB_NAME,DB_VER);
   req.onupgradeneeded=e=>{
@@ -32,6 +32,19 @@ const dbDelete=async(id)=>{
   return new Promise((res,rej)=>{
     const req=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE).delete(id);
     req.onsuccess=()=>res(); req.onerror=e=>rej(e.target.error);
+  });
+};
+const dbPatchKey=async(id,root,mode)=>{
+  const db=await openDB();
+  return new Promise<void>((res,rej)=>{
+    const store=db.transaction(DB_STORE,'readwrite').objectStore(DB_STORE);
+    const req=store.get(id);
+    req.onsuccess=e=>{
+      const rec=(e.target as any).result;
+      if(rec) store.put({...rec,detectedRoot:root,detectedMode:mode});
+      res();
+    };
+    req.onerror=e=>rej((e.target as any).error);
   });
 };
 
@@ -117,6 +130,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .song-badges{display:flex;gap:4px;flex-shrink:0;}
 .badge{font-size:10px;font-family:'DM Mono',monospace;padding:2px 7px;border-radius:10px;background:var(--bg4);border:1px solid var(--border2);color:var(--amber2);}
 .badge.neutral{color:var(--text3);}
+.badge.key{color:var(--amber3);border-color:var(--amber);}
 .song-del{background:none;border:none;color:var(--text3);cursor:pointer;min-width:34px;min-height:34px;border-radius:6px;font-size:13px;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .15s,color .15s;-webkit-tap-highlight-color:transparent;}
 .song-item:hover .song-del{opacity:1;}
 @media(max-width:660px){.song-del{opacity:.45;}}
@@ -198,6 +212,127 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 const fmt=s=>!s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
 const pitchLabel=s=>s===0?"±0":s>0?`+${s}`:`${s}`;
 
+/* ─── Key Detection (Krumhansl-Schmuckler) ───────────────── */
+/* In-place Cooley-Tukey radix-2 FFT (copied from pv-processor.js) */
+function _fft(re:Float64Array,im:Float64Array,inv:boolean){
+  const n=re.length;
+  for(let i=1,j=0;i<n;i++){
+    let b=n>>1;
+    for(;j&b;b>>=1) j^=b;
+    j^=b;
+    if(i<j){
+      let t=re[i];re[i]=re[j];re[j]=t;
+      t=im[i];im[i]=im[j];im[j]=t;
+    }
+  }
+  const TP=2*Math.PI;
+  for(let len=2;len<=n;len<<=1){
+    const ang=(inv?1:-1)*TP/len;
+    const wr=Math.cos(ang),wi=Math.sin(ang);
+    for(let i=0;i<n;i+=len){
+      let ur=1,ui=0;
+      for(let j=0;j<len>>1;j++){
+        const k=i+j+(len>>1);
+        const ar=re[i+j],ai=im[i+j];
+        const br=re[k]*ur-im[k]*ui;
+        const bi=re[k]*ui+im[k]*ur;
+        re[i+j]=ar+br;im[i+j]=ai+bi;
+        re[k]=ar-br;im[k]=ai-bi;
+        const t=ur*wr-ui*wi;ui=ur*wi+ui*wr;ur=t;
+      }
+    }
+  }
+}
+
+const CHROMA_N=4096;
+const CHROMA_WIN=(()=>{
+  const w=new Float32Array(CHROMA_N);
+  for(let i=0;i<CHROMA_N;i++) w[i]=0.5*(1-Math.cos(2*Math.PI*i/(CHROMA_N-1)));
+  return w;
+})();
+
+/* Krumhansl-Schmuckler key profiles */
+const KS_MAJOR=[6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
+const KS_MINOR=[6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
+
+function _pearson(x:number[],y:number[]){
+  let mx=0,my=0;
+  for(let i=0;i<12;i++){mx+=x[i];my+=y[i];}
+  mx/=12;my/=12;
+  let num=0,dx=0,dy=0;
+  for(let i=0;i<12;i++){
+    const a=x[i]-mx,b=y[i]-my;
+    num+=a*b;dx+=a*a;dy+=b*b;
+  }
+  const denom=Math.sqrt(dx*dy);
+  return denom<1e-10?0:num/denom;
+}
+
+const NOTE_NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'major'|'minor'}|null>{
+  if(audioBuffer.duration<1) return null;
+
+  /* Mix to mono, limit to first 60 s */
+  const sr=audioBuffer.sampleRate;
+  const maxSamples=Math.min(audioBuffer.length,sr*60);
+  const mono=new Float32Array(maxSamples);
+  const nc=audioBuffer.numberOfChannels;
+  for(let c=0;c<nc;c++){
+    const ch=audioBuffer.getChannelData(c);
+    for(let i=0;i<maxSamples;i++) mono[i]+=ch[i];
+  }
+  if(nc>1) for(let i=0;i<maxSamples;i++) mono[i]/=nc;
+
+  /* Build chromagram */
+  const chroma=new Array(12).fill(0);
+  const re=new Float64Array(CHROMA_N);
+  const im=new Float64Array(CHROMA_N);
+  const hop=CHROMA_N>>1;
+  let frameCount=0;
+
+  for(let pos=0;pos+CHROMA_N<=maxSamples;pos+=hop){
+    for(let i=0;i<CHROMA_N;i++){re[i]=mono[pos+i]*CHROMA_WIN[i];im[i]=0;}
+    _fft(re,im,false);
+    for(let k=1;k<=CHROMA_N>>1;k++){
+      const f=k*sr/CHROMA_N;
+      if(f<30||f>5000) continue;
+      const midi=69+12*Math.log2(f/440);
+      const pc=((Math.round(midi)%12)+12)%12;
+      chroma[pc]+=re[k]*re[k]+im[k]*im[k];
+    }
+    frameCount++;
+    /* yield every 64 frames to keep UI responsive */
+    if(frameCount%64===0) await new Promise(r=>setTimeout(r,0));
+  }
+
+  const total=chroma.reduce((a,b)=>a+b,0);
+  if(total<1e-6) return null;
+  for(let i=0;i<12;i++) chroma[i]/=total;
+
+  /* Krumhansl-Schmuckler correlation against all 24 keys */
+  let bestR=-Infinity,bestRoot=0,bestMode:'major'|'minor'='major';
+  for(let root=0;root<12;root++){
+    const maj=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
+    const min=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
+    const rMaj=_pearson(chroma,maj);
+    const rMin=_pearson(chroma,min);
+    if(rMaj>bestR){bestR=rMaj;bestRoot=root;bestMode='major';}
+    if(rMin>bestR){bestR=rMin;bestRoot=root;bestMode='minor';}
+  }
+  return{root:bestRoot,mode:bestMode};
+}
+
+const keyLabel=(song:{detectedRoot:number|null,detectedMode:'major'|'minor'|null,pitch:number}):string|null=>{
+  if(song.detectedRoot===null||song.detectedMode===null) return null;
+  const root=((song.detectedRoot+song.pitch)%12+12)%12;
+  return song.detectedMode==='major'?NOTE_NAMES[root]:`${NOTE_NAMES[root]}m`;
+};
+
+/* Simple semaphore to cap concurrent detection jobs */
+let _detectingCount=0;
+const MAX_DETECT=2;
+
 /* ─── lamejs loader ──────────────────────────────────────── */
 const loadLame=()=>new Promise<any>((resolve,reject)=>{
   if((window as any).lamejs){resolve((window as any).lamejs);return;}
@@ -227,6 +362,7 @@ export default function WorshipSetlist() {
   const [showThemes, setShowThemes] = useState(false);
   const [dragOverIdx,setDragOverIdx]= useState(null);
   const [exportingId,setExportingId]= useState<string|null>(null);
+  const [keyDetecting,setKeyDetecting]= useState<Set<string>>(()=>new Set());
 
   const fileInputRef    = useRef(null);
   const actxRef         = useRef(null);
@@ -276,6 +412,7 @@ export default function WorshipSetlist() {
         const restored=await Promise.all(saved.map(async s=>{
           const audioBuffer=await ctx.decodeAudioData(s.arrayBuffer.slice(0));
           return{id:s.id,name:s.name,audioBuffer,pitch:s.pitch,tempo:s.tempo,
+            detectedRoot:s.detectedRoot??null,detectedMode:s.detectedMode??null,
             cachedBuffer:null,cachedPitch:null,cachedTempo:null};
         }));
         restored.sort((a,b)=>saved.findIndex(s=>s.id===a.id)-saved.findIndex(s=>s.id===b.id));
@@ -588,16 +725,39 @@ export default function WorshipSetlist() {
           const audioBuffer=await ctx.decodeAudioData(ab);
           return{id:Math.random().toString(36).slice(2,9),
             name:file.name.replace(/\.[^.]+$/,""),audioBuffer,
-            pitch:0,tempo:100};
+            pitch:0,tempo:100,detectedRoot:null,detectedMode:null};
         })
     );
     setSongs(prev=>{
       const next=[...prev,...loaded];
       loaded.forEach(s=>{
         const arrayBuffer=audioBufferToArrayBuffer(s.audioBuffer);
-        dbPut({id:s.id,name:s.name,arrayBuffer,pitch:s.pitch,tempo:s.tempo}).catch(()=>{});
+        dbPut({id:s.id,name:s.name,arrayBuffer,pitch:s.pitch,tempo:s.tempo,detectedRoot:null,detectedMode:null}).catch(()=>{});
       });
       return next;
+    });
+    /* Fire key detection for each new song (rate-limited) */
+    loaded.forEach(song=>{
+      setKeyDetecting(prev=>new Set(prev).add(song.id));
+      const run=async()=>{
+        while(_detectingCount>=MAX_DETECT) await new Promise(r=>setTimeout(r,200));
+        _detectingCount++;
+        try{
+          const result=await detectKey(song.audioBuffer);
+          if(result){
+            setSongs(prev=>{
+              if(!prev.find(s=>s.id===song.id)) return prev;
+              return prev.map(s=>s.id===song.id?{...s,detectedRoot:result.root,detectedMode:result.mode}:s);
+            });
+            dbPatchKey(song.id,result.root,result.mode).catch(()=>{});
+          }
+        }catch(e){console.warn('Key detection failed:',e);}
+        finally{
+          _detectingCount--;
+          setKeyDetecting(prev=>{const n=new Set(prev);n.delete(song.id);return n;});
+        }
+      };
+      run();
     });
   };
 
@@ -689,6 +849,11 @@ export default function WorshipSetlist() {
                           <div className="song-num">{idx===playingIdx&&isPlaying?<IconPlaySm/>:idx+1}</div>
                           <span className="song-name" title={song.name}>{song.name}</span>
                           <div className="song-badges">
+                            {keyLabel(song)?(
+                              <span className="badge key">{keyLabel(song)}</span>
+                            ):keyDetecting.has(song.id)?(
+                              <span className="badge neutral" style={{fontSize:9}}>key…</span>
+                            ):null}
                             <span className={`badge${song.pitch===0?" neutral":""}`}>{pitchLabel(song.pitch)}st</span>
                             <span className={`badge${song.tempo===100?" neutral":""}`}>{song.tempo}%</span>
                           </div>
@@ -800,9 +965,13 @@ export default function WorshipSetlist() {
               </div>
               {currentSong?(
                 <div className="np-info">
-                  <div className="np-eyebrow">Now Playing · {playingIdx+1}/{songs.length}</div>
+                  <div className="np-eyebrow">
+                    Now Playing · {playingIdx+1}/{songs.length}
+                    {keyLabel(currentSong)&&<> · <span style={{color:'var(--amber3)'}}>{keyLabel(currentSong)}</span></>}
+                  </div>
                   <div className="np-title">{currentSong.name}</div>
                   <div className="np-badges">
+                    {keyLabel(currentSong)&&<div className="np-badge" style={{color:'var(--amber3)',borderColor:'var(--amber)'}}>{keyLabel(currentSong)}</div>}
                     <div className="np-badge">{pitchLabel(currentSong.pitch)} semitones</div>
                     <div className="np-badge">{currentSong.tempo}% tempo</div>
                   </div>
