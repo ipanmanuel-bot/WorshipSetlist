@@ -512,6 +512,10 @@ export default function WorshipSetlist() {
   const sourceRef       = useRef(null);  // kept for compat (unused by worklet path)
   const workletNodeRef  = useRef<AudioWorkletNode|null>(null);
   const workletReadyRef = useRef<Promise<void>|null>(null);
+  /* MediaStream bridge — routes worklet audio through an <audio> element so
+     iOS treats it as a real media player and keeps it alive in background. */
+  const destNodeRef     = useRef<MediaStreamDestinationNode|null>(null);
+  const audioOutRef     = useRef<HTMLAudioElement|null>(null);
   const startTimeRef    = useRef(0);
   const pausedAtRef     = useRef(0);
   const rafRef          = useRef(null);
@@ -537,6 +541,8 @@ export default function WorshipSetlist() {
       if(document.visibilityState==='visible'&&isPlayingRef.current){
         const ctx=actxRef.current;
         if(ctx&&ctx.state==='suspended') ctx.resume().catch(()=>{});
+        /* Restart the audio-out element in case iOS paused it */
+        if(audioOutRef.current?.paused) audioOutRef.current.play().catch(()=>{});
       }
     };
     document.addEventListener('visibilitychange',onVisible);
@@ -554,7 +560,7 @@ export default function WorshipSetlist() {
       if(isPlayingRef.current){
         const ctx=getCtx();
         pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
-        stopSource(); setIsPlaying(false);
+        stopSource(); audioOutRef.current?.pause(); setIsPlaying(false);
       } else {
         const idx=playingIdxRef.current??activeIdxRef.current;
         if(idx!==null) playFrom(idx,pausedAtRef.current);
@@ -588,7 +594,7 @@ export default function WorshipSetlist() {
       if(isPlayingRef.current){
         const ctx=getCtx();
         pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
-        stopSource(); setIsPlaying(false);
+        stopSource(); audioOutRef.current?.pause(); setIsPlaying(false);
       }
     });
     navigator.mediaSession.setActionHandler('nexttrack', ()=>{
@@ -654,12 +660,23 @@ export default function WorshipSetlist() {
   const getCtx=()=>{
     if(!actxRef.current||actxRef.current.state==="closed"){
       const ctx=new(window.AudioContext||window.webkitAudioContext)();
-      /* Auto-resume when iOS suspends the context on screen-lock.
-         This works because the silent <audio> loop keeps the audio session
-         active, so iOS honours resume() without a user gesture. */
+      /* When iOS suspends the context, immediately resume it.
+         The <audio> element below (audioOutRef) is the real audio output and
+         keeps the OS audio session alive, so resume() is honoured without
+         a user gesture even on a locked screen. */
       ctx.onstatechange=()=>{
         if(ctx.state==='suspended'&&isPlayingRef.current) ctx.resume().catch(()=>{});
       };
+      /* MediaStream bridge: worklet → destNode → <audio srcObject=stream>
+         iOS treats the <audio> element as a proper media player so it
+         continues running in the background / with the screen locked. */
+      try{
+        const dest=ctx.createMediaStreamDestination();
+        const el=new Audio();
+        el.srcObject=dest.stream;
+        destNodeRef.current=dest;
+        audioOutRef.current=el;
+      }catch{ destNodeRef.current=null; audioOutRef.current=null; }
       actxRef.current=ctx;
     }
     return actxRef.current;
@@ -733,7 +750,15 @@ export default function WorshipSetlist() {
         if(data.t==='ended') advance();
       };
 
-      node.connect(ctx.destination);
+      /* Route through MediaStream bridge if available (iOS background audio),
+         otherwise fall back to direct ctx.destination output. */
+      if(destNodeRef.current){
+        node.connect(destNodeRef.current);
+        const el=audioOutRef.current;
+        if(el&&el.paused) el.play().catch(()=>{ node.connect(ctx.destination); });
+      } else {
+        node.connect(ctx.destination);
+      }
       workletNodeRef.current=node;
       durationRef.current=outDuration;
       setDuration(outDuration); setProgress(offset);
@@ -763,7 +788,9 @@ export default function WorshipSetlist() {
     const ctx=getCtx();
     if(isPlaying){
       pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
-      stopSource(); setIsPlaying(false);
+      stopSource();
+      audioOutRef.current?.pause();
+      setIsPlaying(false);
     } else { playFrom(playingIdx??activeIdx??0,pausedAtRef.current); }
   };
 
