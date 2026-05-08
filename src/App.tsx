@@ -84,6 +84,15 @@ const THEMES=[
 const getSavedTheme=()=>{ try{ return localStorage.getItem('ws-theme')||'ocean'; }catch{ return 'ocean'; } };
 const saveTheme=id=>{ try{ localStorage.setItem('ws-theme',id); }catch{} };
 const applyTheme=theme=>{ const r=document.documentElement; Object.entries(theme.vars).forEach(([k,v])=>r.style.setProperty(k,v)); };
+
+/* ─── PWA install helpers ─────────────────────────────────── */
+let _installPrompt:any=null;
+let _onInstallReady:(()=>void)|null=null;
+window.addEventListener('beforeinstallprompt',(e:any)=>{
+  e.preventDefault(); _installPrompt=e; _onInstallReady?.();
+});
+const isIOS=()=>/iphone|ipad|ipod/i.test(navigator.userAgent)&&!(window as any).MSStream;
+const isStandalone=()=>!!(window.matchMedia('(display-mode: standalone)').matches||(navigator as any).standalone);
 const saveOrder=(songs:{id:string}[])=>{ try{ localStorage.setItem('ws-order',JSON.stringify(songs.map(s=>s.id))); }catch{} };
 const getSavedOrder=():string[]=>{ try{ return JSON.parse(localStorage.getItem('ws-order')||'[]'); }catch{ return []; } };
 
@@ -256,6 +265,33 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .theme-option:hover{background:var(--bg3);}
 .theme-option.active{color:var(--amber);font-weight:600;}
 .theme-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+/* Mobile: theme button becomes a plain colored circle */
+.theme-btn-label{display:inline;}
+.theme-btn-circle{display:none;width:22px;height:22px;border-radius:50%;flex-shrink:0;border:2px solid var(--border2);}
+@media(max-width:660px){
+  .theme-btn{padding:0;width:36px;height:36px;border-radius:50%;justify-content:center;border:none;}
+  .theme-btn-label{display:none;}
+  .theme-btn-circle{display:block;}
+}
+/* Install button */
+.install-btn{display:flex;align-items:center;gap:5px;background:none;border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;}
+.install-btn:hover{background:var(--amber);color:#fff;}
+@media(max-width:660px){.install-btn{padding:0;width:36px;height:36px;border-radius:50%;justify-content:center;}.install-btn-label{display:none;}}
+/* iOS install modal */
+.pwa-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:flex-end;justify-content:center;}
+.pwa-sheet{background:var(--bg2);border-radius:20px 20px 0 0;padding:24px 24px 40px;width:100%;max-width:480px;border:1px solid var(--border2);}
+.pwa-sheet h2{font-family:'Syne',sans-serif;font-size:18px;font-weight:700;margin-bottom:6px;color:var(--text);}
+.pwa-sheet p{font-size:12px;color:var(--text2);margin-bottom:20px;}
+.pwa-steps{list-style:none;display:flex;flex-direction:column;gap:14px;margin-bottom:24px;}
+.pwa-step{display:flex;align-items:flex-start;gap:12px;}
+.pwa-step-num{min-width:26px;height:26px;border-radius:50%;background:var(--amber);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.pwa-step-text{font-size:13px;color:var(--text);line-height:1.5;padding-top:3px;}
+.pwa-step-text b{color:var(--amber2);}
+.pwa-hint{background:var(--bg3);border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;margin-bottom:20px;border:1px solid var(--border);}
+.pwa-hint svg{flex-shrink:0;color:var(--amber);}
+.pwa-hint span{font-size:11px;color:var(--text2);line-height:1.5;}
+.pwa-close{width:100%;padding:13px;border-radius:10px;background:var(--bg3);border:1px solid var(--border2);color:var(--text2);font-size:14px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;}
+.pwa-close:hover{background:var(--bg4);}
 `;
 
 const fmt=s=>!s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
@@ -506,6 +542,8 @@ export default function WorshipSetlist() {
   const [dragOverIdx,setDragOverIdx]= useState(null);
   const [exportingId,setExportingId]= useState<string|null>(null);
   const [keyDetecting,setKeyDetecting]= useState<Set<string>>(()=>new Set());
+  const [canInstall,  setCanInstall]  = useState(()=>!isStandalone()&&(!!_installPrompt||isIOS()));
+  const [showInstall, setShowInstall] = useState(false);
 
   const fileInputRef    = useRef(null);
   const actxRef         = useRef(null);
@@ -534,6 +572,15 @@ export default function WorshipSetlist() {
   useEffect(()=>{ activeIdxRef.current=activeIdx; },   [activeIdx]);
   useEffect(()=>{ playingIdxRef.current=playingIdx; }, [playingIdx]);
   useEffect(()=>{ isPlayingRef.current=isPlaying; },   [isPlaying]);
+
+  // Wire up the beforeinstallprompt callback so the install button appears
+  // even if the event fired before the component mounted.
+  useEffect(()=>{
+    if(isStandalone()){ setCanInstall(false); return; }
+    _onInstallReady=()=>setCanInstall(true);
+    if(_installPrompt||isIOS()) setCanInstall(true);
+    return()=>{ _onInstallReady=null; };
+  },[]);
 
   // Resume AudioContext when app returns from background / screen-unlock
   useEffect(()=>{
@@ -797,6 +844,14 @@ export default function WorshipSetlist() {
   const handlePrev=()=>{const pi=playingIdx??activeIdx;if(pi!==null){pausedAtRef.current=0;playFrom(Math.max(0,pi-1),0);}};
   const handleNext=()=>{const pi=playingIdx??activeIdx;if(pi!==null&&pi+1<songs.length){pausedAtRef.current=0;playFrom(pi+1,0);}};
 
+  const handleInstall=async()=>{
+    if(isIOS()){ setShowInstall(true); return; }
+    if(!_installPrompt) return;
+    _installPrompt.prompt();
+    const{outcome}=await _installPrompt.userChoice;
+    if(outcome==='accepted'){ _installPrompt=null; setCanInstall(false); }
+  };
+
   const handleProgressClick=e=>{
     if(playingIdx===null||duration===0) return;
     const rect=e.currentTarget.getBoundingClientRect();
@@ -1058,9 +1113,45 @@ export default function WorshipSetlist() {
       <div className="app">
         <header className="header">
           <h1>PitchList</h1>
-          <button className="theme-btn" onClick={e=>{e.stopPropagation();setShowThemes(p=>!p)}}>
-            🎨 Theme
+          {canInstall&&(
+            <button className="install-btn" onClick={handleInstall} title="Install app">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg>
+              <span className="install-btn-label">Install App</span>
+            </button>
+          )}
+          {showInstall&&(
+            <div className="pwa-overlay" onClick={()=>setShowInstall(false)}>
+              <div className="pwa-sheet" onClick={e=>e.stopPropagation()}>
+                <h2>Install PitchList</h2>
+                <p>Add to your Home Screen for the best experience — fullscreen, offline, and ready instantly.</p>
+                <ul className="pwa-steps">
+                  <li className="pwa-step">
+                    <div className="pwa-step-num">1</div>
+                    <div className="pwa-step-text">Tap the <b>Share</b> button <svg style={{verticalAlign:'middle'}} width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5l-1.42 1.42-1.59-1.59V16h-1.98V4.83L9.42 6.42 8 5l4-4 4 4zm4 5v11c0 1.1-.9 2-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h3v2H6v11h12V10h-3V8h3a2 2 0 0 1 2 2z"/></svg> in Safari's toolbar at the bottom of your screen</div>
+                  </li>
+                  <li className="pwa-step">
+                    <div className="pwa-step-num">2</div>
+                    <div className="pwa-step-text">Scroll down in the share sheet and tap <b>"Add to Home Screen"</b></div>
+                  </li>
+                  <li className="pwa-step">
+                    <div className="pwa-step-num">3</div>
+                    <div className="pwa-step-text">Tap <b>"Add"</b> in the top-right corner to confirm</div>
+                  </li>
+                </ul>
+                <div className="pwa-hint">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                  <span>Make sure you're using <b>Safari</b> — this won't work in Chrome or other browsers on iPhone.</span>
+                </div>
+                <button className="pwa-close" onClick={()=>setShowInstall(false)}>Got it</button>
+              </div>
+            </div>
+          )}
+          {(()=>{const t=THEMES.find(t=>t.id===themeId)||THEMES[0];return(
+          <button className="theme-btn" onClick={e=>{e.stopPropagation();setShowThemes(p=>!p)}} title="Change theme">
+            <span className="theme-btn-label">🎨 Theme</span>
+            <span className="theme-btn-circle" style={{background:t.vars['--amber']}}/>
           </button>
+          );})()}
           {showThemes&&(
             <div className="theme-dropdown" onClick={e=>e.stopPropagation()}>
               {THEMES.map(t=>(
