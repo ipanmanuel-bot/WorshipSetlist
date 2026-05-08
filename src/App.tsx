@@ -258,7 +258,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .t-btn.play-btn{min-width:58px;min-height:58px;background:var(--amber);border-color:var(--amber);color:#fff;}
 .t-btn.play-btn:hover:not(:disabled){background:var(--amber2);border-color:var(--amber2);}
 .t-btn:disabled{opacity:.2;cursor:not-allowed;}
-.theme-btn{margin-left:auto;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:6px 10px;font-size:11px;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:5px;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;}
+.theme-btn{background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:6px 10px;font-size:11px;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:5px;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;}
 .theme-btn:hover{border-color:var(--amber);color:var(--amber);}
 .theme-dropdown{position:absolute;top:58px;right:12px;z-index:100;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4);min-width:160px;}
 .theme-option{padding:11px 16px;font-size:13px;cursor:pointer;transition:background .12s;display:flex;align-items:center;gap:8px;-webkit-tap-highlight-color:transparent;}
@@ -274,9 +274,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
   .theme-btn-circle{display:block;}
 }
 /* Install button */
-.install-btn{display:flex;align-items:center;gap:5px;background:none;border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;}
-.install-btn:hover{background:var(--amber);color:#fff;}
-@media(max-width:660px){.install-btn{padding:0;width:36px;height:36px;border-radius:50%;justify-content:center;}.install-btn-label{display:none;}}
+.install-btn{display:flex;align-items:center;gap:4px;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:6px;padding:4px 8px;font-size:10px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;margin-left:auto;}
+.install-btn:hover{border-color:var(--amber);color:var(--amber);}
+@media(max-width:660px){.install-btn{padding:4px 7px;font-size:10px;}}
 /* iOS install modal */
 .pwa-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:flex-end;justify-content:center;}
 .pwa-sheet{background:var(--bg2);border-radius:20px 20px 0 0;padding:24px 24px 40px;width:100%;max-width:480px;border:1px solid var(--border2);}
@@ -290,6 +290,11 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .pwa-hint{background:var(--bg3);border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;margin-bottom:20px;border:1px solid var(--border);}
 .pwa-hint svg{flex-shrink:0;color:var(--amber);}
 .pwa-hint span{font-size:11px;color:var(--text2);line-height:1.5;}
+.pwa-lang{display:flex;align-items:center;gap:2px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:3px;margin-left:auto;}
+.pwa-lang button{background:none;border:none;color:var(--text2);font-size:11px;font-weight:600;font-family:'DM Mono',monospace;padding:3px 8px;border-radius:6px;cursor:pointer;transition:all .12s;-webkit-tap-highlight-color:transparent;}
+.pwa-lang button.active{background:var(--amber);color:#fff;}
+.pwa-sheet-header{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;}
+.pwa-sheet-header h2{margin:0;flex:1;}
 .pwa-close{width:100%;padding:13px;border-radius:10px;background:var(--bg3);border:1px solid var(--border2);color:var(--text2);font-size:14px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;}
 .pwa-close:hover{background:var(--bg4);}
 `;
@@ -544,6 +549,7 @@ export default function WorshipSetlist() {
   const [keyDetecting,setKeyDetecting]= useState<Set<string>>(()=>new Set());
   const [canInstall,  setCanInstall]  = useState(()=>!isStandalone()&&(!!_installPrompt||isIOS()));
   const [showInstall, setShowInstall] = useState(false);
+  const [installLang, setInstallLang] = useState<'en'|'id'>('en');
 
   const fileInputRef    = useRef(null);
   const actxRef         = useRef(null);
@@ -678,6 +684,47 @@ export default function WorshipSetlist() {
     setTimeout(()=>document.addEventListener('click',h),0);
     return ()=>document.removeEventListener('click',h);
   },[showThemes]);
+
+  // Keep a stable ref to loadFiles so the SW message handler (mounted once) always calls the latest version
+  const loadFilesRef = useRef<((files:FileList|File[])=>void)|null>(null);
+
+  // Handle files shared into the app from other apps (Web Share Target — Android)
+  useEffect(()=>{
+    /* Read pending files from the share cache and import them */
+    const importFromShareCache=async()=>{
+      if(!('caches' in window)) return;
+      try{
+        const cache=await caches.open('pitchlist-share');
+        const keys=await cache.keys();
+        if(!keys.length) return;
+        const files:File[]=[];
+        for(const req of keys){
+          const resp=await cache.match(req);
+          if(!resp) continue;
+          const blob=await resp.blob();
+          const name=resp.headers.get('x-filename')||req.url.split('/').pop()||'audio';
+          files.push(new File([blob],decodeURIComponent(name),{type:resp.headers.get('content-type')||blob.type}));
+          await cache.delete(req);
+        }
+        if(files.length) loadFilesRef.current?.(files);
+      }catch(e){ console.error('share-cache read failed',e); }
+    };
+
+    /* Check if we were opened via /share-target redirect */
+    if(location.search.includes('shared=1')){
+      history.replaceState(null,'',location.pathname);
+      importFromShareCache();
+    }
+
+    /* Also handle the case where the app was already open when the share happened —
+       the service worker posts a message instead of redirecting */
+    const onMessage=(e:MessageEvent)=>{
+      if(e.data?.type==='SHARE_RECEIVED') importFromShareCache();
+    };
+    navigator.serviceWorker?.addEventListener('message',onMessage);
+    return()=>navigator.serviceWorker?.removeEventListener('message',onMessage);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
 
   // Load persisted songs on first mount
   useEffect(()=>{
@@ -1088,6 +1135,7 @@ export default function WorshipSetlist() {
       run();
     });
   };
+  loadFilesRef.current=loadFiles;
 
   const removeSong=(id,e)=>{
     e.stopPropagation();
@@ -1113,38 +1161,63 @@ export default function WorshipSetlist() {
       <div className="app">
         <header className="header">
           <h1>PitchList</h1>
-          {canInstall&&(
-            <button className="install-btn" onClick={handleInstall} title="Install app">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg>
-              <span className="install-btn-label">Install App</span>
-            </button>
-          )}
-          {showInstall&&(
+          {showInstall&&(()=>{
+            const en={
+              title:'Install PitchList',
+              sub:'Add to your Home Screen for the best experience — fullscreen, offline, and ready instantly.',
+              steps:[
+                <><b>Tap the Share</b> button <svg style={{verticalAlign:'middle'}} width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5l-1.42 1.42-1.59-1.59V16h-1.98V4.83L9.42 6.42 8 5l4-4 4 4zm4 5v11c0 1.1-.9 2-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h3v2H6v11h12V10h-3V8h3a2 2 0 0 1 2 2z"/></svg> in Safari's toolbar at the bottom of your screen</>,
+                <>Scroll down in the share sheet and tap <b>"Add to Home Screen"</b></>,
+                <>Tap <b>"Add"</b> in the top-right corner to confirm</>,
+              ],
+              hint:<>Make sure you're using <b>Safari</b> — this won't work in Chrome or other browsers on iPhone.</>,
+              close:'Got it',
+            };
+            const id={
+              title:'Pasang PitchList',
+              sub:'Tambahkan ke Layar Utama untuk pengalaman terbaik — layar penuh, bisa offline, dan langsung siap.',
+              steps:[
+                <><b>Ketuk tombol Bagikan</b> <svg style={{verticalAlign:'middle'}} width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5l-1.42 1.42-1.59-1.59V16h-1.98V4.83L9.42 6.42 8 5l4-4 4 4zm4 5v11c0 1.1-.9 2-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h3v2H6v11h12V10h-3V8h3a2 2 0 0 1 2 2z"/></svg> di toolbar Safari bagian bawah layar</>,
+                <>Gulir ke bawah pada lembar berbagi, lalu ketuk <b>"Tambahkan ke Layar Utama"</b></>,
+                <>Ketuk <b>"Tambahkan"</b> di pojok kanan atas untuk mengonfirmasi</>,
+              ],
+              hint:<>Pastikan kamu menggunakan <b>Safari</b> — fitur ini tidak tersedia di Chrome atau browser lain di iPhone.</>,
+              close:'Mengerti',
+            };
+            const t=installLang==='id'?id:en;
+            return(
             <div className="pwa-overlay" onClick={()=>setShowInstall(false)}>
               <div className="pwa-sheet" onClick={e=>e.stopPropagation()}>
-                <h2>Install PitchList</h2>
-                <p>Add to your Home Screen for the best experience — fullscreen, offline, and ready instantly.</p>
+                <div className="pwa-sheet-header">
+                  <h2>{t.title}</h2>
+                  <div className="pwa-lang">
+                    <button className={installLang==='en'?'active':''} onClick={()=>setInstallLang('en')}>EN</button>
+                    <button className={installLang==='id'?'active':''} onClick={()=>setInstallLang('id')}>ID</button>
+                  </div>
+                </div>
+                <p>{t.sub}</p>
                 <ul className="pwa-steps">
-                  <li className="pwa-step">
-                    <div className="pwa-step-num">1</div>
-                    <div className="pwa-step-text">Tap the <b>Share</b> button <svg style={{verticalAlign:'middle'}} width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5l-1.42 1.42-1.59-1.59V16h-1.98V4.83L9.42 6.42 8 5l4-4 4 4zm4 5v11c0 1.1-.9 2-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h3v2H6v11h12V10h-3V8h3a2 2 0 0 1 2 2z"/></svg> in Safari's toolbar at the bottom of your screen</div>
-                  </li>
-                  <li className="pwa-step">
-                    <div className="pwa-step-num">2</div>
-                    <div className="pwa-step-text">Scroll down in the share sheet and tap <b>"Add to Home Screen"</b></div>
-                  </li>
-                  <li className="pwa-step">
-                    <div className="pwa-step-num">3</div>
-                    <div className="pwa-step-text">Tap <b>"Add"</b> in the top-right corner to confirm</div>
-                  </li>
+                  {t.steps.map((step,i)=>(
+                    <li key={i} className="pwa-step">
+                      <div className="pwa-step-num">{i+1}</div>
+                      <div className="pwa-step-text">{step}</div>
+                    </li>
+                  ))}
                 </ul>
                 <div className="pwa-hint">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-                  <span>Make sure you're using <b>Safari</b> — this won't work in Chrome or other browsers on iPhone.</span>
+                  <span>{t.hint}</span>
                 </div>
-                <button className="pwa-close" onClick={()=>setShowInstall(false)}>Got it</button>
+                <button className="pwa-close" onClick={()=>setShowInstall(false)}>{t.close}</button>
               </div>
             </div>
+            );
+          })()}
+          {canInstall&&(
+            <button className="install-btn" onClick={handleInstall} title="Install app">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg>
+              Install
+            </button>
           )}
           {(()=>{const t=THEMES.find(t=>t.id===themeId)||THEMES[0];return(
           <button className="theme-btn" onClick={e=>{e.stopPropagation();setShowThemes(p=>!p)}} title="Change theme">
