@@ -95,27 +95,39 @@ const getSavedOrder=():string[]=>{ try{ return JSON.parse(localStorage.getItem('
       iOS doesn't suspend the AudioContext when the app is minimised.
    The looping element must stay referenced (not GC'd) for this to work. */
 let _keepAlive:HTMLAudioElement|null=null;
-let _audioUnlocked=false;
+let _sessionSet=false;
+/* Build the silent keepalive element once, then call unlockAudio() on every
+   user gesture so play() is retried until the browser accepts it. */
 const unlockAudio=()=>{
-  if(_audioUnlocked) return;
-  _audioUnlocked=true;
   try{
-    if('audioSession' in navigator)(navigator as any).audioSession.category='playback';
-    /* Build a minimal silent looping WAV (800 samples = 0.1 s @ 8 kHz) */
-    const sr=8000,ns=800;
-    const ab=new ArrayBuffer(44+ns*2);
-    const v=new DataView(ab);
-    const ws=(o:number,s:string)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
-    ws(0,'RIFF');v.setUint32(4,36+ns*2,true);ws(8,'WAVE');ws(12,'fmt ');
-    v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
-    v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
-    v.setUint16(32,2,true);v.setUint16(34,16,true);
-    ws(36,'data');v.setUint32(40,ns*2,true); /* samples stay zero = silence */
-    const url=URL.createObjectURL(new Blob([ab],{type:'audio/wav'}));
-    _keepAlive=new Audio(url);
-    _keepAlive.loop=true;
-    _keepAlive.volume=0;
-    _keepAlive.play().catch(()=>{});
+    /* Set audio session category once — Safari 17+ / iOS 17+ */
+    if(!_sessionSet&&'audioSession' in navigator){
+      (navigator as any).audioSession.category='playback';
+      _sessionSet=true;
+    }
+    /* Create the looping silent WAV element once */
+    if(!_keepAlive){
+      const sr=8000,ns=800;
+      const ab=new ArrayBuffer(44+ns*2);
+      const v=new DataView(ab);
+      const ws=(o:number,s:string)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+      ws(0,'RIFF');v.setUint32(4,36+ns*2,true);ws(8,'WAVE');ws(12,'fmt ');
+      v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+      v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
+      v.setUint16(32,2,true);v.setUint16(34,16,true);
+      ws(36,'data');v.setUint32(40,ns*2,true);
+      const url=URL.createObjectURL(new Blob([ab],{type:'audio/wav'}));
+      _keepAlive=new Audio(url);
+      _keepAlive.loop=true;
+      _keepAlive.volume=0;
+      /* Re-start keepalive if iOS pauses it on screen-lock */
+      document.addEventListener('visibilitychange',()=>{
+        if(document.visibilityState==='visible'&&_keepAlive&&_keepAlive.paused)
+          _keepAlive.play().catch(()=>{});
+      });
+    }
+    /* Retry play() on every user gesture until iOS accepts it */
+    if(_keepAlive.paused) _keepAlive.play().catch(()=>{});
   }catch{}
 };
 
@@ -129,7 +141,7 @@ const STYLE=`
   --text:#d4eaf7;--text2:#6a90a8;--text3:#3a5a6a;
   --amber:#1a8fc0;--amber2:#25aae0;--amber3:#60ccff;--red:#e05555;
 }
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;overscroll-behavior-x:none;}
 .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;position:relative;}
 .header{flex-shrink:0;height:54px;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--bg2);position:relative;z-index:20;}
 .header h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:600;letter-spacing:-.5px;color:var(--text);}
@@ -222,7 +234,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .np-badge{padding:3px 9px;border-radius:20px;background:var(--bg3);border:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--amber2);}
 .progress-wrap{flex:1;padding:0;min-width:0;order:3;}
 @media(max-width:660px){.progress-wrap{padding:4px 16px;width:100%;flex:none;order:0;}}
-.prog-bar{background:var(--bg3);border-radius:3px;height:4px;cursor:pointer;position:relative;margin-bottom:5px;-webkit-tap-highlight-color:transparent;}
+.prog-bar{background:var(--bg3);border-radius:3px;height:4px;cursor:pointer;position:relative;margin-bottom:5px;-webkit-tap-highlight-color:transparent;touch-action:none;}
 .prog-fill{background:linear-gradient(90deg,var(--amber),var(--amber2));height:100%;border-radius:3px;pointer-events:none;}
 .prog-thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:50%;background:var(--amber2);border:2px solid var(--bg2);box-shadow:0 1px 6px rgba(0,0,0,.4);pointer-events:none;transition:transform .1s;}
 .prog-bar:hover .prog-thumb,.prog-bar:active .prog-thumb{transform:translate(-50%,-50%) scale(1.3);}
@@ -279,7 +291,10 @@ function _fft(re:Float64Array,im:Float64Array,inv:boolean){
   }
 }
 
-const CHROMA_N=4096;
+/* 8192-sample window: bin width = sr/8192 ≈ 5.4 Hz @ 44100 Hz
+   Enough to resolve semitones down to C2 (65 Hz) where adjacent semitones
+   are ~4 Hz apart — the previous 4096 window (10.8 Hz) was too coarse. */
+const CHROMA_N=8192;
 const CHROMA_WIN=(()=>{
   const w=new Float32Array(CHROMA_N);
   for(let i=0;i<CHROMA_N;i++) w[i]=0.5*(1-Math.cos(2*Math.PI*i/(CHROMA_N-1)));
@@ -289,6 +304,9 @@ const CHROMA_WIN=(()=>{
 /* Krumhansl-Schmuckler key profiles */
 const KS_MAJOR=[6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
 const KS_MINOR=[6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
+/* Temperley (2007) MIREX profiles — better relative-major/minor separation */
+const TEMP_MAJOR=[5.0,2.0,3.5,2.0,4.5,4.0,2.0,4.5,2.0,3.5,1.5,4.0];
+const TEMP_MINOR=[5.0,2.0,3.5,4.5,2.0,4.0,2.0,4.5,3.5,2.0,1.5,4.0];
 
 function _pearson(x:number[],y:number[]){
   let mx=0,my=0;
@@ -308,9 +326,8 @@ const NOTE_NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'major'|'minor'}|null>{
   if(audioBuffer.duration<1) return null;
 
-  /* Mix to mono, limit to first 60 s */
   const sr=audioBuffer.sampleRate;
-  const maxSamples=audioBuffer.length; /* analyse full song — some songs open on IV or vi */
+  const maxSamples=audioBuffer.length;
   const mono=new Float32Array(maxSamples);
   const nc=audioBuffer.numberOfChannels;
   for(let c=0;c<nc;c++){
@@ -318,71 +335,104 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
     for(let i=0;i<maxSamples;i++) mono[i]+=ch[i]/nc;
   }
 
-  /* Build chromagram — normalize per frame so each time-slice counts equally */
   const chroma=new Array(12).fill(0);
   const re=new Float64Array(CHROMA_N);
   const im=new Float64Array(CHROMA_N);
-  const hop=CHROMA_N>>1;
+  /* No-overlap hop: at 8192 samples the freq resolution is already good;
+     no-overlap keeps computation proportional to the old 4096/2048 scheme. */
+  const hop=CHROMA_N;
+  let totalWeight=0;
   let frameCount=0;
 
   const N2=CHROMA_N>>1;
   const mag=new Float64Array(N2+1);
-  /* Find spectral peaks in 65 Hz – 5600 Hz (8th harmonic of 700 Hz max fundamental) */
   const kLo=Math.max(2,Math.ceil(65*CHROMA_N/sr));
   const kHi=Math.min(N2-1,Math.floor(5600*CHROMA_N/sr));
+  /* Bass register upper limit (≤500 Hz) for extra tonic-root boost */
+  const kBass=Math.min(N2-1,Math.floor(500*CHROMA_N/sr));
 
   for(let pos=0;pos+CHROMA_N<=maxSamples;pos+=hop){
     for(let i=0;i<CHROMA_N;i++){re[i]=mono[pos+i]*CHROMA_WIN[i];im[i]=0;}
     _fft(re,im,false);
     for(let k=0;k<=N2;k++) mag[k]=Math.sqrt(re[k]*re[k]+im[k]*im[k]);
 
-    /* Frame max for normalization */
+    /* Weight this frame by its RMS — chord-dense sections contribute more
+       than silence / reverb tails / intro/outro instrumental pads. */
+    let rms2=0;
+    for(let i=0;i<CHROMA_N;i++) rms2+=mono[pos+i]*mono[pos+i];
+    const rms=Math.sqrt(rms2/CHROMA_N);
+    if(rms<1e-5){frameCount++;continue;}
+
     let mxf=0;
     for(let k=kLo;k<=kHi;k++) if(mag[k]>mxf) mxf=mag[k];
     if(mxf<1e-10){frameCount++;continue;}
 
     /* HPCP — Harmonic Pitch Class Profile (Gómez 2006):
-       For each spectral peak, treat it as the h-th harmonic of a lower
-       fundamental. Each peak votes for pitch classes of all possible
-       fundamentals with weight 1/h². A cosine window handles slight detuning.
-       This is how Essentia (used by Tunebat) computes its key input. */
+       Each spectral peak is treated as the h-th harmonic of a lower
+       fundamental; votes with weight 1/h² and a cosine detuning window. */
     const fc=new Array(12).fill(0);
     for(let k=kLo;k<=kHi;k++){
-      if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue; /* local max only */
+      if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue;
       const m=mag[k]/mxf;
-      if(m<0.01) continue; /* below noise threshold */
+      if(m<0.01) continue;
       const f=k*sr/CHROMA_N;
       for(let h=1;h<=8;h++){
-        const ff=f/h; /* candidate fundamental */
+        const ff=f/h;
         if(ff<65||ff>700) continue;
         const midi=69+12*Math.log2(ff/440);
         const pc=((Math.round(midi)%12)+12)%12;
-        const dev=midi-Math.round(midi); /* semitone deviation */
-        const cw=Math.cos(Math.PI*dev); /* cosine window ±0.5 st */
+        const dev=midi-Math.round(midi);
+        const cw=Math.cos(Math.PI*dev);
         if(cw<=0) continue;
         fc[pc]+=m*cw*cw/(h*h);
       }
     }
 
-    /* Normalize this frame before accumulating (equal weight per time-slice) */
+    /* Bass boost: for peaks ≤500 Hz add an extra h=1 direct contribution.
+       The bass root note is the strongest key indicator; this counteracts
+       upper-voice melody notes that would otherwise overpower it. */
+    for(let k=kLo;k<=kBass;k++){
+      if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue;
+      const m=mag[k]/mxf;
+      if(m<0.01) continue;
+      const f=k*sr/CHROMA_N;
+      const midi=69+12*Math.log2(f/440);
+      const pc=((Math.round(midi)%12)+12)%12;
+      const dev=midi-Math.round(midi);
+      const cw=Math.cos(Math.PI*dev);
+      if(cw<=0) continue;
+      fc[pc]+=m*cw*cw; /* extra h=1 weight for bass register */
+    }
+
+    /* Normalise frame chroma, then accumulate weighted by frame RMS */
     const ft=fc.reduce((a,b)=>a+b,0);
-    if(ft>1e-6) for(let i=0;i<12;i++) chroma[i]+=fc[i]/ft;
+    if(ft>1e-6){
+      for(let i=0;i<12;i++) chroma[i]+=(fc[i]/ft)*rms;
+      totalWeight+=rms;
+    }
 
     frameCount++;
-    if(frameCount%64===0) await new Promise(r=>setTimeout(r,0));
+    if(frameCount%32===0) await new Promise(r=>setTimeout(r,0));
   }
 
-  const total=chroma.reduce((a,b)=>a+b,0);
-  if(total<1e-6) return null;
-  for(let i=0;i<12;i++) chroma[i]/=total;
+  if(totalWeight<1e-6) return null;
+  for(let i=0;i<12;i++) chroma[i]/=totalWeight;
 
-  /* Krumhansl-Schmuckler correlation against all 24 keys */
+  /* Circular Gaussian smoothing — reduces FFT bin-boundary quantisation noise */
+  const sc=new Array(12).fill(0);
+  for(let i=0;i<12;i++) sc[i]=0.2*chroma[(i+11)%12]+0.6*chroma[i]+0.2*chroma[(i+1)%12];
+
+  /* Ensemble: average Krumhansl-Schmuckler + Temperley correlations.
+     KS alone is known to confuse relative major/minor pairs (e.g. Am vs C);
+     Temperley profiles weight the tonic more distinctly, reducing that error. */
   let bestR=-Infinity,bestRoot=0,bestMode:'major'|'minor'='major';
   for(let root=0;root<12;root++){
-    const maj=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
-    const min=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
-    const rMaj=_pearson(chroma,maj);
-    const rMin=_pearson(chroma,min);
+    const ksM=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
+    const ksm=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
+    const tpM=Array.from({length:12},(_,i)=>TEMP_MAJOR[(i-root+12)%12]);
+    const tpm=Array.from({length:12},(_,i)=>TEMP_MINOR[(i-root+12)%12]);
+    const rMaj=(_pearson(sc,ksM)+_pearson(sc,tpM))/2;
+    const rMin=(_pearson(sc,ksm)+_pearson(sc,tpm))/2;
     if(rMaj>bestR){bestR=rMaj;bestRoot=root;bestMode='major';}
     if(rMin>bestR){bestR=rMin;bestRoot=root;bestMode='minor';}
   }
@@ -454,6 +504,18 @@ export default function WorshipSetlist() {
   useEffect(()=>{ playingIdxRef.current=playingIdx; }, [playingIdx]);
   useEffect(()=>{ isPlayingRef.current=isPlaying; },   [isPlaying]);
 
+  // Resume AudioContext when app returns from background / screen-unlock
+  useEffect(()=>{
+    const onVisible=()=>{
+      if(document.visibilityState==='visible'&&isPlayingRef.current){
+        const ctx=actxRef.current;
+        if(ctx&&ctx.state==='suspended') ctx.resume().catch(()=>{});
+      }
+    };
+    document.addEventListener('visibilitychange',onVisible);
+    return ()=>document.removeEventListener('visibilitychange',onVisible);
+  },[]);
+
   // Spacebar → play/pause (desktop)
   useEffect(()=>{
     const onKey=(e:KeyboardEvent)=>{
@@ -461,6 +523,7 @@ export default function WorshipSetlist() {
       const tag=(e.target as HTMLElement).tagName;
       if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
       e.preventDefault();
+      unlockAudio();
       if(isPlayingRef.current){
         const ctx=getCtx();
         pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
@@ -470,8 +533,8 @@ export default function WorshipSetlist() {
         if(idx!==null) playFrom(idx,pausedAtRef.current);
       }
     };
-    window.addEventListener('keydown',onKey);
-    return ()=>window.removeEventListener('keydown',onKey);
+    window.addEventListener('keydown',onKey,true);
+    return ()=>window.removeEventListener('keydown',onKey,true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
 
@@ -562,9 +625,16 @@ export default function WorshipSetlist() {
   },[]);
 
   const getCtx=()=>{
-    unlockAudio(); /* bypass iOS silent switch on first user gesture */
-    if(!actxRef.current||actxRef.current.state==="closed")
-      actxRef.current=new(window.AudioContext||window.webkitAudioContext)();
+    if(!actxRef.current||actxRef.current.state==="closed"){
+      const ctx=new(window.AudioContext||window.webkitAudioContext)();
+      /* Auto-resume when iOS suspends the context on screen-lock.
+         This works because the silent <audio> loop keeps the audio session
+         active, so iOS honours resume() without a user gesture. */
+      ctx.onstatechange=()=>{
+        if(ctx.state==='suspended'&&isPlayingRef.current) ctx.resume().catch(()=>{});
+      };
+      actxRef.current=ctx;
+    }
     return actxRef.current;
   };
 
@@ -662,6 +732,7 @@ export default function WorshipSetlist() {
   },[]);
 
   const handlePlayPause=()=>{
+    unlockAudio();
     const ctx=getCtx();
     if(isPlaying){
       pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
@@ -1145,13 +1216,13 @@ export default function WorshipSetlist() {
             </div>
 
             <div className="transport">
-              <button className="t-btn" onClick={handlePrev} disabled={songs.length===0||(playingIdx??activeIdx??-1)<=0}><IconPrev/></button>
-              <button className="t-btn play-btn"
+              <button tabIndex={-1} className="t-btn" onClick={handlePrev} disabled={songs.length===0||(playingIdx??activeIdx??-1)<=0}><IconPrev/></button>
+              <button tabIndex={-1} className="t-btn play-btn"
                 onClick={songs.length>0?handlePlayPause:undefined}
                 disabled={songs.length===0}>
                 {isPlaying?<IconPause/>:<IconPlay/>}
               </button>
-              <button className="t-btn" onClick={handleNext} disabled={songs.length===0||(playingIdx??activeIdx??-1)>=songs.length-1}><IconNext/></button>
+              <button tabIndex={-1} className="t-btn" onClick={handleNext} disabled={songs.length===0||(playingIdx??activeIdx??-1)>=songs.length-1}><IconNext/></button>
             </div>
           </div>
       </div>
