@@ -84,6 +84,40 @@ const THEMES=[
 const getSavedTheme=()=>{ try{ return localStorage.getItem('ws-theme')||'ocean'; }catch{ return 'ocean'; } };
 const saveTheme=id=>{ try{ localStorage.setItem('ws-theme',id); }catch{} };
 const applyTheme=theme=>{ const r=document.documentElement; Object.entries(theme.vars).forEach(([k,v])=>r.style.setProperty(k,v)); };
+const saveOrder=(songs:{id:string}[])=>{ try{ localStorage.setItem('ws-order',JSON.stringify(songs.map(s=>s.id))); }catch{} };
+const getSavedOrder=():string[]=>{ try{ return JSON.parse(localStorage.getItem('ws-order')||'[]'); }catch{ return []; } };
+
+/* ─── iOS audio session + background playback ────────────── */
+/* iOS defaults Web Audio API to "ambient" session (respects mute, suspends
+   on background). Fix:
+   1. navigator.audioSession.category='playback' — modern API (Safari 17+)
+   2. Loop a silent <audio> element — keeps the playback session alive so
+      iOS doesn't suspend the AudioContext when the app is minimised.
+   The looping element must stay referenced (not GC'd) for this to work. */
+let _keepAlive:HTMLAudioElement|null=null;
+let _audioUnlocked=false;
+const unlockAudio=()=>{
+  if(_audioUnlocked) return;
+  _audioUnlocked=true;
+  try{
+    if('audioSession' in navigator)(navigator as any).audioSession.category='playback';
+    /* Build a minimal silent looping WAV (800 samples = 0.1 s @ 8 kHz) */
+    const sr=8000,ns=800;
+    const ab=new ArrayBuffer(44+ns*2);
+    const v=new DataView(ab);
+    const ws=(o:number,s:string)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+    ws(0,'RIFF');v.setUint32(4,36+ns*2,true);ws(8,'WAVE');ws(12,'fmt ');
+    v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+    v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
+    v.setUint16(32,2,true);v.setUint16(34,16,true);
+    ws(36,'data');v.setUint32(40,ns*2,true); /* samples stay zero = silence */
+    const url=URL.createObjectURL(new Blob([ab],{type:'audio/wav'}));
+    _keepAlive=new Audio(url);
+    _keepAlive.loop=true;
+    _keepAlive.volume=0;
+    _keepAlive.play().catch(()=>{});
+  }catch{}
+};
 
 /* ─── Styles ─────────────────────────────────────────────── */
 const STYLE=`
@@ -172,6 +206,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 @media(max-width:660px){.player-panel{height:auto;flex-direction:column;padding:0;gap:0;}}
 .now-playing{display:flex;flex-direction:row;align-items:center;padding:0;gap:10px;width:220px;flex-shrink:0;order:1;}
 @media(max-width:660px){.now-playing{width:100%;padding:10px 16px;order:0;}}
+@media(max-width:660px){.np-info{flex:1;align-items:center;text-align:center;}}
 .vinyl-wrap{position:relative;width:46px;height:46px;flex-shrink:0;}
 @media(max-width:660px){.vinyl-wrap{width:46px;height:46px;}}
 .vinyl{width:100%;height:100%;border-radius:50%;background:radial-gradient(circle at 50% 50%,var(--bg4) 18%,transparent 18%),repeating-conic-gradient(var(--bg3) 0deg 4deg,var(--bg) 4deg 8deg);border:1px solid var(--border2);box-shadow:0 0 0 1px var(--border),0 6px 20px rgba(0,0,0,.5);}
@@ -419,6 +454,74 @@ export default function WorshipSetlist() {
   useEffect(()=>{ playingIdxRef.current=playingIdx; }, [playingIdx]);
   useEffect(()=>{ isPlayingRef.current=isPlaying; },   [isPlaying]);
 
+  // Spacebar → play/pause (desktop)
+  useEffect(()=>{
+    const onKey=(e:KeyboardEvent)=>{
+      if(e.code!=='Space') return;
+      const tag=(e.target as HTMLElement).tagName;
+      if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+      e.preventDefault();
+      if(isPlayingRef.current){
+        const ctx=getCtx();
+        pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
+        stopSource(); setIsPlaying(false);
+      } else {
+        const idx=playingIdxRef.current??activeIdxRef.current;
+        if(idx!==null) playFrom(idx,pausedAtRef.current);
+      }
+    };
+    window.addEventListener('keydown',onKey);
+    return ()=>window.removeEventListener('keydown',onKey);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
+
+  // Media Session API — lock screen controls + background audio registration
+  useEffect(()=>{
+    if(!('mediaSession' in navigator)) return;
+    const song = playingIdx!==null ? songs[playingIdx] : null;
+    navigator.mediaSession.metadata = song
+      ? new MediaMetadata({ title: song.name, artist: 'PitchList' })
+      : null;
+  }, [playingIdx, songs]);
+
+  useEffect(()=>{
+    if(!('mediaSession' in navigator)) return;
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+  }, [isPlaying]);
+
+  useEffect(()=>{
+    if(!('mediaSession' in navigator)) return;
+    navigator.mediaSession.setActionHandler('play', ()=>{
+      if(!isPlayingRef.current) playFrom(playingIdxRef.current??0, pausedAtRef.current);
+    });
+    navigator.mediaSession.setActionHandler('pause', ()=>{
+      if(isPlayingRef.current){
+        const ctx=getCtx();
+        pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
+        stopSource(); setIsPlaying(false);
+      }
+    });
+    navigator.mediaSession.setActionHandler('nexttrack', ()=>{
+      const next = playingIdxRef.current;
+      if(next===null) return;
+      const n = next+1;
+      if(n < songsRef.current.length) { setActiveIdx(n); setPlayingIdx(n); pausedAtRef.current=0; playFrom(n,0); }
+    });
+    navigator.mediaSession.setActionHandler('previoustrack', ()=>{
+      const cur = playingIdxRef.current;
+      if(cur===null) return;
+      const p = cur-1;
+      if(p >= 0) { setActiveIdx(p); setPlayingIdx(p); pausedAtRef.current=0; playFrom(p,0); }
+      else { pausedAtRef.current=0; playFrom(cur,0); }
+    });
+    return ()=>{
+      (['play','pause','nexttrack','previoustrack'] as MediaSessionAction[]).forEach(a=>{
+        try{ navigator.mediaSession.setActionHandler(a,null); }catch{}
+      });
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Apply theme
   useEffect(()=>{
     const t=THEMES.find(t=>t.id===themeId)||THEMES[0];
@@ -446,13 +549,20 @@ export default function WorshipSetlist() {
             detectedRoot:s.detectedRoot??null,detectedMode:s.detectedMode??null,
             cachedBuffer:null,cachedPitch:null,cachedTempo:null};
         }));
-        restored.sort((a,b)=>saved.findIndex(s=>s.id===a.id)-saved.findIndex(s=>s.id===b.id));
+        const order=getSavedOrder();
+        restored.sort((a,b)=>{
+          const ai=order.indexOf(a.id), bi=order.indexOf(b.id);
+          if(ai===-1&&bi===-1) return saved.findIndex(s=>s.id===a.id)-saved.findIndex(s=>s.id===b.id);
+          if(ai===-1) return 1; if(bi===-1) return -1;
+          return ai-bi;
+        });
         setSongs(restored);
       }catch(e){ console.error('Restore failed:',e); }
     })();
   },[]);
 
   const getCtx=()=>{
+    unlockAudio(); /* bypass iOS silent switch on first user gesture */
     if(!actxRef.current||actxRef.current.state==="closed")
       actxRef.current=new(window.AudioContext||window.webkitAudioContext)();
     return actxRef.current;
@@ -523,11 +633,7 @@ export default function WorshipSetlist() {
 
       const gen=++genRef.current;
       node.port.onmessage=({data})=>{
-        if(data.t!=='ended'||genRef.current!==gen) return;
-        if(!isPlayingRef.current) return;
-        const next=playingIdxRef.current+1;
-        if(next<songsRef.current.length){setActiveIdx(next);setPlayingIdx(next);pausedAtRef.current=0;playFrom(next,0);}
-        else{setIsPlaying(false);setPlayingIdx(null);setProgress(0);pausedAtRef.current=0;}
+        if(data.t==='ended') advance();
       };
 
       node.connect(ctx.destination);
@@ -536,10 +642,18 @@ export default function WorshipSetlist() {
       setDuration(outDuration); setProgress(offset);
       startTimeRef.current=ctx.currentTime-offset;
 
+      const advance=()=>{
+        if(!isPlayingRef.current||genRef.current!==gen) return;
+        const next=playingIdxRef.current+1;
+        if(next<songsRef.current.length){setActiveIdx(next);setPlayingIdx(next);pausedAtRef.current=0;playFrom(next,0);}
+        else{setIsPlaying(false);setPlayingIdx(null);setProgress(0);pausedAtRef.current=0;}
+      };
+
       const tick=()=>{
         const el=ctx.currentTime-startTimeRef.current;
         setProgress(Math.min(el,durationRef.current));
         if(el<durationRef.current) rafRef.current=requestAnimationFrame(tick);
+        else advance(); /* duration elapsed — go to next song */
       };
       rafRef.current=requestAnimationFrame(tick);
       setPlayingIdx(idx); setActiveIdx(idx); setIsPlaying(true);
@@ -616,6 +730,7 @@ export default function WorshipSetlist() {
       if(playingIdx===from) setPlayingIdx(to);
       else if(playingIdx>from&&playingIdx<=to) setPlayingIdx(i=>i-1);
       else if(playingIdx<from&&playingIdx>=to) setPlayingIdx(i=>i+1);
+      saveOrder(next);
       return next;
     });
   };
@@ -654,6 +769,7 @@ export default function WorshipSetlist() {
       if(playingIdx===from) setPlayingIdx(to);
       else if(playingIdx>from&&playingIdx<=to) setPlayingIdx(i=>i-1);
       else if(playingIdx<from&&playingIdx>=to) setPlayingIdx(i=>i+1);
+      saveOrder(next);
       return next;
     });
   };
@@ -765,6 +881,7 @@ export default function WorshipSetlist() {
         const arrayBuffer=audioBufferToArrayBuffer(s.audioBuffer);
         dbPut({id:s.id,name:s.name,arrayBuffer,pitch:s.pitch,tempo:s.tempo,detectedRoot:null,detectedMode:null}).catch(()=>{});
       });
+      saveOrder(next);
       return next;
     });
     /* Fire key detection for each new song (rate-limited) */
@@ -802,6 +919,7 @@ export default function WorshipSetlist() {
       else if(activeIdx>ri) setActiveIdx(i=>i-1);
       if(playingIdx===ri){stopSource();setIsPlaying(false);setPlayingIdx(null);setProgress(0);}
       else if(playingIdx>ri) setPlayingIdx(i=>i-1);
+      saveOrder(next);
       return next;
     });
   };
@@ -979,7 +1097,7 @@ export default function WorshipSetlist() {
                     stopSource(); setIsPlaying(false); setActiveIdx(null);
                     setProgress(0); setDuration(0); pausedAtRef.current=0;
                     songs.forEach(s=>{ dbDelete(s.id).catch(()=>{}); });
-                    setSongs([]);
+                    saveOrder([]); setSongs([]);
                   }}>Clear Setlist</button>
                 )}
               </div>
@@ -1027,13 +1145,13 @@ export default function WorshipSetlist() {
             </div>
 
             <div className="transport">
-              <button className="t-btn" onClick={handlePrev} disabled={!currentSong||playingIdx===0}><IconPrev/></button>
+              <button className="t-btn" onClick={handlePrev} disabled={songs.length===0||(playingIdx??activeIdx??-1)<=0}><IconPrev/></button>
               <button className="t-btn play-btn"
                 onClick={songs.length>0?handlePlayPause:undefined}
                 disabled={songs.length===0}>
                 {isPlaying?<IconPause/>:<IconPlay/>}
               </button>
-              <button className="t-btn" onClick={handleNext} disabled={!currentSong||playingIdx>=songs.length-1}><IconNext/></button>
+              <button className="t-btn" onClick={handleNext} disabled={songs.length===0||(playingIdx??activeIdx??-1)>=songs.length-1}><IconNext/></button>
             </div>
           </div>
       </div>
