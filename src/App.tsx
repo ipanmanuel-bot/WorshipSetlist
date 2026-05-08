@@ -84,6 +84,52 @@ const THEMES=[
 const getSavedTheme=()=>{ try{ return localStorage.getItem('ws-theme')||'ocean'; }catch{ return 'ocean'; } };
 const saveTheme=id=>{ try{ localStorage.setItem('ws-theme',id); }catch{} };
 const applyTheme=theme=>{ const r=document.documentElement; Object.entries(theme.vars).forEach(([k,v])=>r.style.setProperty(k,v)); };
+const saveOrder=(songs:{id:string}[])=>{ try{ localStorage.setItem('ws-order',JSON.stringify(songs.map(s=>s.id))); }catch{} };
+const getSavedOrder=():string[]=>{ try{ return JSON.parse(localStorage.getItem('ws-order')||'[]'); }catch{ return []; } };
+
+/* ─── iOS audio session + background playback ────────────── */
+/* iOS defaults Web Audio API to "ambient" session (respects mute, suspends
+   on background). Fix:
+   1. navigator.audioSession.category='playback' — modern API (Safari 17+)
+   2. Loop a silent <audio> element — keeps the playback session alive so
+      iOS doesn't suspend the AudioContext when the app is minimised.
+   The looping element must stay referenced (not GC'd) for this to work. */
+let _keepAlive:HTMLAudioElement|null=null;
+let _sessionSet=false;
+/* Build the silent keepalive element once, then call unlockAudio() on every
+   user gesture so play() is retried until the browser accepts it. */
+const unlockAudio=()=>{
+  try{
+    /* Set audio session category once — Safari 17+ / iOS 17+ */
+    if(!_sessionSet&&'audioSession' in navigator){
+      (navigator as any).audioSession.category='playback';
+      _sessionSet=true;
+    }
+    /* Create the looping silent WAV element once */
+    if(!_keepAlive){
+      const sr=8000,ns=800;
+      const ab=new ArrayBuffer(44+ns*2);
+      const v=new DataView(ab);
+      const ws=(o:number,s:string)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));};
+      ws(0,'RIFF');v.setUint32(4,36+ns*2,true);ws(8,'WAVE');ws(12,'fmt ');
+      v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+      v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);
+      v.setUint16(32,2,true);v.setUint16(34,16,true);
+      ws(36,'data');v.setUint32(40,ns*2,true);
+      const url=URL.createObjectURL(new Blob([ab],{type:'audio/wav'}));
+      _keepAlive=new Audio(url);
+      _keepAlive.loop=true;
+      _keepAlive.volume=0;
+      /* Re-start keepalive if iOS pauses it on screen-lock */
+      document.addEventListener('visibilitychange',()=>{
+        if(document.visibilityState==='visible'&&_keepAlive&&_keepAlive.paused)
+          _keepAlive.play().catch(()=>{});
+      });
+    }
+    /* Retry play() on every user gesture until iOS accepts it */
+    if(_keepAlive.paused) _keepAlive.play().catch(()=>{});
+  }catch{}
+};
 
 /* ─── Styles ─────────────────────────────────────────────── */
 const STYLE=`
@@ -95,7 +141,7 @@ const STYLE=`
   --text:#d4eaf7;--text2:#6a90a8;--text3:#3a5a6a;
   --amber:#1a8fc0;--amber2:#25aae0;--amber3:#60ccff;--red:#e05555;
 }
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;overscroll-behavior-x:none;}
 .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;position:relative;}
 .header{flex-shrink:0;height:54px;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--bg2);position:relative;z-index:20;}
 .header h1{font-family:'Syne',sans-serif;font-size:22px;font-weight:600;letter-spacing:-.5px;color:var(--text);}
@@ -126,7 +172,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .song-row{display:flex;align-items:center;gap:10px;padding:11px 12px;min-height:50px;}
 .song-num{width:28px;height:28px;border-radius:50%;flex-shrink:0;background:var(--bg3);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);transition:all .15s;}
 .song-item.active .song-num{background:var(--amber);border-color:var(--amber);color:#fff;}
-.song-name{flex:1;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+@media(max-width:660px){.song-num{display:none;}}
+.song-name{flex:1;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+@keyframes mq-scroll{0%,25%{transform:translateX(0);}70%,92%{transform:translateX(var(--mq,0px));}100%{transform:translateX(0);}}
 .song-badges{display:flex;gap:4px;flex-shrink:0;}
 .badge{font-size:10px;font-family:'DM Mono',monospace;padding:2px 7px;border-radius:10px;background:var(--bg4);border:1px solid var(--border2);color:var(--amber2);}
 .badge.neutral{color:var(--text3);}
@@ -172,6 +220,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 @media(max-width:660px){.player-panel{height:auto;flex-direction:column;padding:0;gap:0;}}
 .now-playing{display:flex;flex-direction:row;align-items:center;padding:0;gap:10px;width:220px;flex-shrink:0;order:1;}
 @media(max-width:660px){.now-playing{width:100%;padding:10px 16px;order:0;}}
+@media(max-width:660px){.np-info{flex:1;align-items:center;text-align:center;}}
 .vinyl-wrap{position:relative;width:46px;height:46px;flex-shrink:0;}
 @media(max-width:660px){.vinyl-wrap{width:46px;height:46px;}}
 .vinyl{width:100%;height:100%;border-radius:50%;background:radial-gradient(circle at 50% 50%,var(--bg4) 18%,transparent 18%),repeating-conic-gradient(var(--bg3) 0deg 4deg,var(--bg) 4deg 8deg);border:1px solid var(--border2);box-shadow:0 0 0 1px var(--border),0 6px 20px rgba(0,0,0,.5);}
@@ -180,14 +229,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .vinyl-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:17px;height:17px;border-radius:50%;background:var(--amber);display:flex;align-items:center;justify-content:center;font-size:9px;}
 .np-info{display:flex;flex-direction:column;gap:2px;min-width:0;}
 .np-eyebrow{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--amber);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.np-title{font-family:'Syne',serif;font-size:14px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.np-title{display:block;font-family:'Syne',serif;font-size:14px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .np-empty{color:var(--text3);font-size:12px;font-style:italic;}
 .np-badges{display:none;}
 @media(max-width:660px){.np-badges{display:flex;gap:5px;margin-top:3px;flex-wrap:wrap;}}
 .np-badge{padding:3px 9px;border-radius:20px;background:var(--bg3);border:1px solid var(--border2);font-size:10px;font-family:'DM Mono',monospace;color:var(--amber2);}
 .progress-wrap{flex:1;padding:0;min-width:0;order:3;}
 @media(max-width:660px){.progress-wrap{padding:4px 16px;width:100%;flex:none;order:0;}}
-.prog-bar{background:var(--bg3);border-radius:3px;height:4px;cursor:pointer;position:relative;margin-bottom:5px;-webkit-tap-highlight-color:transparent;}
+.prog-bar{background:var(--bg3);border-radius:3px;height:4px;cursor:pointer;position:relative;margin-bottom:5px;-webkit-tap-highlight-color:transparent;touch-action:none;}
 .prog-fill{background:linear-gradient(90deg,var(--amber),var(--amber2));height:100%;border-radius:3px;pointer-events:none;}
 .prog-thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:50%;background:var(--amber2);border:2px solid var(--bg2);box-shadow:0 1px 6px rgba(0,0,0,.4);pointer-events:none;transition:transform .1s;}
 .prog-bar:hover .prog-thumb,.prog-bar:active .prog-thumb{transform:translate(-50%,-50%) scale(1.3);}
@@ -244,7 +293,10 @@ function _fft(re:Float64Array,im:Float64Array,inv:boolean){
   }
 }
 
-const CHROMA_N=4096;
+/* 8192-sample window: bin width = sr/8192 ≈ 5.4 Hz @ 44100 Hz
+   Enough to resolve semitones down to C2 (65 Hz) where adjacent semitones
+   are ~4 Hz apart — the previous 4096 window (10.8 Hz) was too coarse. */
+const CHROMA_N=8192;
 const CHROMA_WIN=(()=>{
   const w=new Float32Array(CHROMA_N);
   for(let i=0;i<CHROMA_N;i++) w[i]=0.5*(1-Math.cos(2*Math.PI*i/(CHROMA_N-1)));
@@ -254,6 +306,9 @@ const CHROMA_WIN=(()=>{
 /* Krumhansl-Schmuckler key profiles */
 const KS_MAJOR=[6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
 const KS_MINOR=[6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
+/* Temperley (2007) MIREX profiles — better relative-major/minor separation */
+const TEMP_MAJOR=[5.0,2.0,3.5,2.0,4.5,4.0,2.0,4.5,2.0,3.5,1.5,4.0];
+const TEMP_MINOR=[5.0,2.0,3.5,4.5,2.0,4.0,2.0,4.5,3.5,2.0,1.5,4.0];
 
 function _pearson(x:number[],y:number[]){
   let mx=0,my=0;
@@ -273,9 +328,8 @@ const NOTE_NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'major'|'minor'}|null>{
   if(audioBuffer.duration<1) return null;
 
-  /* Mix to mono, limit to first 60 s */
   const sr=audioBuffer.sampleRate;
-  const maxSamples=audioBuffer.length; /* analyse full song — some songs open on IV or vi */
+  const maxSamples=audioBuffer.length;
   const mono=new Float32Array(maxSamples);
   const nc=audioBuffer.numberOfChannels;
   for(let c=0;c<nc;c++){
@@ -283,71 +337,104 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
     for(let i=0;i<maxSamples;i++) mono[i]+=ch[i]/nc;
   }
 
-  /* Build chromagram — normalize per frame so each time-slice counts equally */
   const chroma=new Array(12).fill(0);
   const re=new Float64Array(CHROMA_N);
   const im=new Float64Array(CHROMA_N);
-  const hop=CHROMA_N>>1;
+  /* No-overlap hop: at 8192 samples the freq resolution is already good;
+     no-overlap keeps computation proportional to the old 4096/2048 scheme. */
+  const hop=CHROMA_N;
+  let totalWeight=0;
   let frameCount=0;
 
   const N2=CHROMA_N>>1;
   const mag=new Float64Array(N2+1);
-  /* Find spectral peaks in 65 Hz – 5600 Hz (8th harmonic of 700 Hz max fundamental) */
   const kLo=Math.max(2,Math.ceil(65*CHROMA_N/sr));
   const kHi=Math.min(N2-1,Math.floor(5600*CHROMA_N/sr));
+  /* Bass register upper limit (≤500 Hz) for extra tonic-root boost */
+  const kBass=Math.min(N2-1,Math.floor(500*CHROMA_N/sr));
 
   for(let pos=0;pos+CHROMA_N<=maxSamples;pos+=hop){
     for(let i=0;i<CHROMA_N;i++){re[i]=mono[pos+i]*CHROMA_WIN[i];im[i]=0;}
     _fft(re,im,false);
     for(let k=0;k<=N2;k++) mag[k]=Math.sqrt(re[k]*re[k]+im[k]*im[k]);
 
-    /* Frame max for normalization */
+    /* Weight this frame by its RMS — chord-dense sections contribute more
+       than silence / reverb tails / intro/outro instrumental pads. */
+    let rms2=0;
+    for(let i=0;i<CHROMA_N;i++) rms2+=mono[pos+i]*mono[pos+i];
+    const rms=Math.sqrt(rms2/CHROMA_N);
+    if(rms<1e-5){frameCount++;continue;}
+
     let mxf=0;
     for(let k=kLo;k<=kHi;k++) if(mag[k]>mxf) mxf=mag[k];
     if(mxf<1e-10){frameCount++;continue;}
 
     /* HPCP — Harmonic Pitch Class Profile (Gómez 2006):
-       For each spectral peak, treat it as the h-th harmonic of a lower
-       fundamental. Each peak votes for pitch classes of all possible
-       fundamentals with weight 1/h². A cosine window handles slight detuning.
-       This is how Essentia (used by Tunebat) computes its key input. */
+       Each spectral peak is treated as the h-th harmonic of a lower
+       fundamental; votes with weight 1/h² and a cosine detuning window. */
     const fc=new Array(12).fill(0);
     for(let k=kLo;k<=kHi;k++){
-      if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue; /* local max only */
+      if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue;
       const m=mag[k]/mxf;
-      if(m<0.01) continue; /* below noise threshold */
+      if(m<0.01) continue;
       const f=k*sr/CHROMA_N;
       for(let h=1;h<=8;h++){
-        const ff=f/h; /* candidate fundamental */
+        const ff=f/h;
         if(ff<65||ff>700) continue;
         const midi=69+12*Math.log2(ff/440);
         const pc=((Math.round(midi)%12)+12)%12;
-        const dev=midi-Math.round(midi); /* semitone deviation */
-        const cw=Math.cos(Math.PI*dev); /* cosine window ±0.5 st */
+        const dev=midi-Math.round(midi);
+        const cw=Math.cos(Math.PI*dev);
         if(cw<=0) continue;
         fc[pc]+=m*cw*cw/(h*h);
       }
     }
 
-    /* Normalize this frame before accumulating (equal weight per time-slice) */
+    /* Bass boost: for peaks ≤500 Hz add an extra h=1 direct contribution.
+       The bass root note is the strongest key indicator; this counteracts
+       upper-voice melody notes that would otherwise overpower it. */
+    for(let k=kLo;k<=kBass;k++){
+      if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue;
+      const m=mag[k]/mxf;
+      if(m<0.01) continue;
+      const f=k*sr/CHROMA_N;
+      const midi=69+12*Math.log2(f/440);
+      const pc=((Math.round(midi)%12)+12)%12;
+      const dev=midi-Math.round(midi);
+      const cw=Math.cos(Math.PI*dev);
+      if(cw<=0) continue;
+      fc[pc]+=m*cw*cw; /* extra h=1 weight for bass register */
+    }
+
+    /* Normalise frame chroma, then accumulate weighted by frame RMS */
     const ft=fc.reduce((a,b)=>a+b,0);
-    if(ft>1e-6) for(let i=0;i<12;i++) chroma[i]+=fc[i]/ft;
+    if(ft>1e-6){
+      for(let i=0;i<12;i++) chroma[i]+=(fc[i]/ft)*rms;
+      totalWeight+=rms;
+    }
 
     frameCount++;
-    if(frameCount%64===0) await new Promise(r=>setTimeout(r,0));
+    if(frameCount%32===0) await new Promise(r=>setTimeout(r,0));
   }
 
-  const total=chroma.reduce((a,b)=>a+b,0);
-  if(total<1e-6) return null;
-  for(let i=0;i<12;i++) chroma[i]/=total;
+  if(totalWeight<1e-6) return null;
+  for(let i=0;i<12;i++) chroma[i]/=totalWeight;
 
-  /* Krumhansl-Schmuckler correlation against all 24 keys */
+  /* Circular Gaussian smoothing — reduces FFT bin-boundary quantisation noise */
+  const sc=new Array(12).fill(0);
+  for(let i=0;i<12;i++) sc[i]=0.2*chroma[(i+11)%12]+0.6*chroma[i]+0.2*chroma[(i+1)%12];
+
+  /* Ensemble: average Krumhansl-Schmuckler + Temperley correlations.
+     KS alone is known to confuse relative major/minor pairs (e.g. Am vs C);
+     Temperley profiles weight the tonic more distinctly, reducing that error. */
   let bestR=-Infinity,bestRoot=0,bestMode:'major'|'minor'='major';
   for(let root=0;root<12;root++){
-    const maj=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
-    const min=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
-    const rMaj=_pearson(chroma,maj);
-    const rMin=_pearson(chroma,min);
+    const ksM=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
+    const ksm=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
+    const tpM=Array.from({length:12},(_,i)=>TEMP_MAJOR[(i-root+12)%12]);
+    const tpm=Array.from({length:12},(_,i)=>TEMP_MINOR[(i-root+12)%12]);
+    const rMaj=(_pearson(sc,ksM)+_pearson(sc,tpM))/2;
+    const rMin=(_pearson(sc,ksm)+_pearson(sc,tpm))/2;
     if(rMaj>bestR){bestR=rMaj;bestRoot=root;bestMode='major';}
     if(rMin>bestR){bestR=rMin;bestRoot=root;bestMode='minor';}
   }
@@ -357,7 +444,9 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
 const keyLabel=(song:{detectedRoot:number|null,detectedMode:'major'|'minor'|null,pitch:number}):string|null=>{
   if(song.detectedRoot===null||song.detectedMode===null) return null;
   const root=((song.detectedRoot+song.pitch)%12+12)%12;
-  return song.detectedMode==='major'?NOTE_NAMES[root]:`${NOTE_NAMES[root]}m`;
+  if(song.detectedMode==='major') return NOTE_NAMES[root];
+  const relMajor=NOTE_NAMES[(root+3)%12];
+  return `${NOTE_NAMES[root]}m (${relMajor})`;
 };
 
 /* Simple semaphore to cap concurrent detection jobs */
@@ -381,6 +470,29 @@ const IconPlay=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="current
 const IconPause=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>;
 const IconPlaySm=()=><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
 
+/* Scrolls overflowing text after a pause so the full title is readable */
+function MarqueeText({text,className}:{text:string,className?:string}){
+  const ref=useRef<HTMLSpanElement>(null);
+  const [dist,setDist]=useState(0);
+  useEffect(()=>{
+    const el=ref.current; if(!el) return;
+    const measure=()=>setDist(Math.max(0,el.scrollWidth-el.clientWidth-1));
+    measure();
+    const ro=new ResizeObserver(measure); ro.observe(el);
+    return()=>ro.disconnect();
+  },[text]);
+  return(
+    <span ref={ref} className={className}
+      style={dist>0?{textOverflow:'clip'}:undefined}>
+      <span style={dist>0?{
+        display:'inline-block',
+        animation:`mq-scroll ${Math.max(6,3+dist/30)}s ease-in-out infinite`,
+        ['--mq' as string]:'-'+dist+'px'
+      } as React.CSSProperties:undefined}>{text}</span>
+    </span>
+  );
+}
+
 export default function WorshipSetlist() {
   const [songs,      setSongs]      = useState([]);
   const [activeIdx,  setActiveIdx]  = useState(null);
@@ -400,6 +512,10 @@ export default function WorshipSetlist() {
   const sourceRef       = useRef(null);  // kept for compat (unused by worklet path)
   const workletNodeRef  = useRef<AudioWorkletNode|null>(null);
   const workletReadyRef = useRef<Promise<void>|null>(null);
+  /* MediaStream bridge — routes worklet audio through an <audio> element so
+     iOS treats it as a real media player and keeps it alive in background. */
+  const destNodeRef     = useRef<MediaStreamDestinationNode|null>(null);
+  const audioOutRef     = useRef<HTMLAudioElement|null>(null);
   const startTimeRef    = useRef(0);
   const pausedAtRef     = useRef(0);
   const rafRef          = useRef(null);
@@ -418,6 +534,89 @@ export default function WorshipSetlist() {
   useEffect(()=>{ activeIdxRef.current=activeIdx; },   [activeIdx]);
   useEffect(()=>{ playingIdxRef.current=playingIdx; }, [playingIdx]);
   useEffect(()=>{ isPlayingRef.current=isPlaying; },   [isPlaying]);
+
+  // Resume AudioContext when app returns from background / screen-unlock
+  useEffect(()=>{
+    const onVisible=()=>{
+      if(document.visibilityState==='visible'&&isPlayingRef.current){
+        const ctx=actxRef.current;
+        if(ctx&&ctx.state==='suspended') ctx.resume().catch(()=>{});
+        /* Restart the audio-out element in case iOS paused it */
+        if(audioOutRef.current?.paused) audioOutRef.current.play().catch(()=>{});
+      }
+    };
+    document.addEventListener('visibilitychange',onVisible);
+    return ()=>document.removeEventListener('visibilitychange',onVisible);
+  },[]);
+
+  // Spacebar → play/pause (desktop)
+  useEffect(()=>{
+    const onKey=(e:KeyboardEvent)=>{
+      if(e.code!=='Space') return;
+      const tag=(e.target as HTMLElement).tagName;
+      if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+      e.preventDefault();
+      unlockAudio();
+      if(isPlayingRef.current){
+        const ctx=getCtx();
+        pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
+        stopSource(); audioOutRef.current?.pause(); setIsPlaying(false);
+      } else {
+        const idx=playingIdxRef.current??activeIdxRef.current;
+        if(idx!==null) playFrom(idx,pausedAtRef.current);
+      }
+    };
+    window.addEventListener('keydown',onKey,true);
+    return ()=>window.removeEventListener('keydown',onKey,true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
+
+  // Media Session API — lock screen controls + background audio registration
+  useEffect(()=>{
+    if(!('mediaSession' in navigator)) return;
+    const song = playingIdx!==null ? songs[playingIdx] : null;
+    navigator.mediaSession.metadata = song
+      ? new MediaMetadata({ title: song.name, artist: 'PitchList' })
+      : null;
+  }, [playingIdx, songs]);
+
+  useEffect(()=>{
+    if(!('mediaSession' in navigator)) return;
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+  }, [isPlaying]);
+
+  useEffect(()=>{
+    if(!('mediaSession' in navigator)) return;
+    navigator.mediaSession.setActionHandler('play', ()=>{
+      if(!isPlayingRef.current) playFrom(playingIdxRef.current??0, pausedAtRef.current);
+    });
+    navigator.mediaSession.setActionHandler('pause', ()=>{
+      if(isPlayingRef.current){
+        const ctx=getCtx();
+        pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
+        stopSource(); audioOutRef.current?.pause(); setIsPlaying(false);
+      }
+    });
+    navigator.mediaSession.setActionHandler('nexttrack', ()=>{
+      const next = playingIdxRef.current;
+      if(next===null) return;
+      const n = next+1;
+      if(n < songsRef.current.length) { setActiveIdx(n); setPlayingIdx(n); pausedAtRef.current=0; playFrom(n,0); }
+    });
+    navigator.mediaSession.setActionHandler('previoustrack', ()=>{
+      const cur = playingIdxRef.current;
+      if(cur===null) return;
+      const p = cur-1;
+      if(p >= 0) { setActiveIdx(p); setPlayingIdx(p); pausedAtRef.current=0; playFrom(p,0); }
+      else { pausedAtRef.current=0; playFrom(cur,0); }
+    });
+    return ()=>{
+      (['play','pause','nexttrack','previoustrack'] as MediaSessionAction[]).forEach(a=>{
+        try{ navigator.mediaSession.setActionHandler(a,null); }catch{}
+      });
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Apply theme
   useEffect(()=>{
@@ -446,15 +645,40 @@ export default function WorshipSetlist() {
             detectedRoot:s.detectedRoot??null,detectedMode:s.detectedMode??null,
             cachedBuffer:null,cachedPitch:null,cachedTempo:null};
         }));
-        restored.sort((a,b)=>saved.findIndex(s=>s.id===a.id)-saved.findIndex(s=>s.id===b.id));
+        const order=getSavedOrder();
+        restored.sort((a,b)=>{
+          const ai=order.indexOf(a.id), bi=order.indexOf(b.id);
+          if(ai===-1&&bi===-1) return saved.findIndex(s=>s.id===a.id)-saved.findIndex(s=>s.id===b.id);
+          if(ai===-1) return 1; if(bi===-1) return -1;
+          return ai-bi;
+        });
         setSongs(restored);
       }catch(e){ console.error('Restore failed:',e); }
     })();
   },[]);
 
   const getCtx=()=>{
-    if(!actxRef.current||actxRef.current.state==="closed")
-      actxRef.current=new(window.AudioContext||window.webkitAudioContext)();
+    if(!actxRef.current||actxRef.current.state==="closed"){
+      const ctx=new(window.AudioContext||window.webkitAudioContext)();
+      /* When iOS suspends the context, immediately resume it.
+         The <audio> element below (audioOutRef) is the real audio output and
+         keeps the OS audio session alive, so resume() is honoured without
+         a user gesture even on a locked screen. */
+      ctx.onstatechange=()=>{
+        if(ctx.state==='suspended'&&isPlayingRef.current) ctx.resume().catch(()=>{});
+      };
+      /* MediaStream bridge: worklet → destNode → <audio srcObject=stream>
+         iOS treats the <audio> element as a proper media player so it
+         continues running in the background / with the screen locked. */
+      try{
+        const dest=ctx.createMediaStreamDestination();
+        const el=new Audio();
+        el.srcObject=dest.stream;
+        destNodeRef.current=dest;
+        audioOutRef.current=el;
+      }catch{ destNodeRef.current=null; audioOutRef.current=null; }
+      actxRef.current=ctx;
+    }
     return actxRef.current;
   };
 
@@ -523,23 +747,35 @@ export default function WorshipSetlist() {
 
       const gen=++genRef.current;
       node.port.onmessage=({data})=>{
-        if(data.t!=='ended'||genRef.current!==gen) return;
-        if(!isPlayingRef.current) return;
-        const next=playingIdxRef.current+1;
-        if(next<songsRef.current.length){setActiveIdx(next);setPlayingIdx(next);pausedAtRef.current=0;playFrom(next,0);}
-        else{setIsPlaying(false);setPlayingIdx(null);setProgress(0);pausedAtRef.current=0;}
+        if(data.t==='ended') advance();
       };
 
-      node.connect(ctx.destination);
+      /* Route through MediaStream bridge if available (iOS background audio),
+         otherwise fall back to direct ctx.destination output. */
+      if(destNodeRef.current){
+        node.connect(destNodeRef.current);
+        const el=audioOutRef.current;
+        if(el&&el.paused) el.play().catch(()=>{ node.connect(ctx.destination); });
+      } else {
+        node.connect(ctx.destination);
+      }
       workletNodeRef.current=node;
       durationRef.current=outDuration;
       setDuration(outDuration); setProgress(offset);
       startTimeRef.current=ctx.currentTime-offset;
 
+      const advance=()=>{
+        if(!isPlayingRef.current||genRef.current!==gen) return;
+        const next=playingIdxRef.current+1;
+        if(next<songsRef.current.length){setActiveIdx(next);setPlayingIdx(next);pausedAtRef.current=0;playFrom(next,0);}
+        else{setIsPlaying(false);setPlayingIdx(null);setProgress(0);pausedAtRef.current=0;}
+      };
+
       const tick=()=>{
         const el=ctx.currentTime-startTimeRef.current;
         setProgress(Math.min(el,durationRef.current));
         if(el<durationRef.current) rafRef.current=requestAnimationFrame(tick);
+        else advance(); /* duration elapsed — go to next song */
       };
       rafRef.current=requestAnimationFrame(tick);
       setPlayingIdx(idx); setActiveIdx(idx); setIsPlaying(true);
@@ -548,10 +784,13 @@ export default function WorshipSetlist() {
   },[]);
 
   const handlePlayPause=()=>{
+    unlockAudio();
     const ctx=getCtx();
     if(isPlaying){
       pausedAtRef.current=Math.min(ctx.currentTime-startTimeRef.current,durationRef.current);
-      stopSource(); setIsPlaying(false);
+      stopSource();
+      audioOutRef.current?.pause();
+      setIsPlaying(false);
     } else { playFrom(playingIdx??activeIdx??0,pausedAtRef.current); }
   };
 
@@ -616,6 +855,7 @@ export default function WorshipSetlist() {
       if(playingIdx===from) setPlayingIdx(to);
       else if(playingIdx>from&&playingIdx<=to) setPlayingIdx(i=>i-1);
       else if(playingIdx<from&&playingIdx>=to) setPlayingIdx(i=>i+1);
+      saveOrder(next);
       return next;
     });
   };
@@ -654,6 +894,7 @@ export default function WorshipSetlist() {
       if(playingIdx===from) setPlayingIdx(to);
       else if(playingIdx>from&&playingIdx<=to) setPlayingIdx(i=>i-1);
       else if(playingIdx<from&&playingIdx>=to) setPlayingIdx(i=>i+1);
+      saveOrder(next);
       return next;
     });
   };
@@ -765,6 +1006,7 @@ export default function WorshipSetlist() {
         const arrayBuffer=audioBufferToArrayBuffer(s.audioBuffer);
         dbPut({id:s.id,name:s.name,arrayBuffer,pitch:s.pitch,tempo:s.tempo,detectedRoot:null,detectedMode:null}).catch(()=>{});
       });
+      saveOrder(next);
       return next;
     });
     /* Fire key detection for each new song (rate-limited) */
@@ -802,6 +1044,7 @@ export default function WorshipSetlist() {
       else if(activeIdx>ri) setActiveIdx(i=>i-1);
       if(playingIdx===ri){stopSource();setIsPlaying(false);setPlayingIdx(null);setProgress(0);}
       else if(playingIdx>ri) setPlayingIdx(i=>i-1);
+      saveOrder(next);
       return next;
     });
   };
@@ -878,7 +1121,7 @@ export default function WorshipSetlist() {
                             <span/><span/><span/>
                           </div>
                           <div className="song-num">{idx===playingIdx&&isPlaying?<IconPlaySm/>:idx+1}</div>
-                          <span className="song-name" title={song.name}>{song.name}</span>
+                          <MarqueeText className="song-name" text={song.name}/>
                           <div className="song-badges">
                             {keyLabel(song)?(
                               <span className="badge key">Key: {keyLabel(song)}</span>
@@ -979,7 +1222,7 @@ export default function WorshipSetlist() {
                     stopSource(); setIsPlaying(false); setActiveIdx(null);
                     setProgress(0); setDuration(0); pausedAtRef.current=0;
                     songs.forEach(s=>{ dbDelete(s.id).catch(()=>{}); });
-                    setSongs([]);
+                    saveOrder([]); setSongs([]);
                   }}>Clear Setlist</button>
                 )}
               </div>
@@ -1000,7 +1243,7 @@ export default function WorshipSetlist() {
                     Now Playing · {playingIdx+1}/{songs.length}
                     {keyLabel(currentSong)&&<> · <span style={{color:'var(--amber3)'}}>Key: {keyLabel(currentSong)}</span></>}
                   </div>
-                  <div className="np-title">{currentSong.name}</div>
+                  <MarqueeText className="np-title" text={currentSong.name}/>
                   <div className="np-badges">
                     {keyLabel(currentSong)&&<div className="np-badge" style={{color:'var(--amber3)',borderColor:'var(--amber)'}}>Key: {keyLabel(currentSong)}</div>}
                     <div className="np-badge">{pitchLabel(currentSong.pitch)} semitones</div>
@@ -1027,13 +1270,13 @@ export default function WorshipSetlist() {
             </div>
 
             <div className="transport">
-              <button className="t-btn" onClick={handlePrev} disabled={!currentSong||playingIdx===0}><IconPrev/></button>
-              <button className="t-btn play-btn"
+              <button tabIndex={-1} className="t-btn" onClick={handlePrev} disabled={songs.length===0||(playingIdx??activeIdx??-1)<=0}><IconPrev/></button>
+              <button tabIndex={-1} className="t-btn play-btn"
                 onClick={songs.length>0?handlePlayPause:undefined}
                 disabled={songs.length===0}>
                 {isPlaying?<IconPause/>:<IconPlay/>}
               </button>
-              <button className="t-btn" onClick={handleNext} disabled={!currentSong||playingIdx>=songs.length-1}><IconNext/></button>
+              <button tabIndex={-1} className="t-btn" onClick={handleNext} disabled={songs.length===0||(playingIdx??activeIdx??-1)>=songs.length-1}><IconNext/></button>
             </div>
           </div>
       </div>
