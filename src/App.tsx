@@ -172,7 +172,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .song-row{display:flex;align-items:center;gap:10px;padding:11px 12px;min-height:50px;}
 .song-num{width:28px;height:28px;border-radius:50%;flex-shrink:0;background:var(--bg3);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;font-family:'DM Mono',monospace;color:var(--text3);transition:all .15s;}
 .song-item.active .song-num{background:var(--amber);border-color:var(--amber);color:#fff;}
-.song-name{flex:1;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+@media(max-width:660px){.song-num{display:none;}}
+.song-name{flex:1;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+@keyframes mq-scroll{0%,25%{transform:translateX(0);}70%,92%{transform:translateX(var(--mq,0px));}100%{transform:translateX(0);}}
 .song-badges{display:flex;gap:4px;flex-shrink:0;}
 .badge{font-size:10px;font-family:'DM Mono',monospace;padding:2px 7px;border-radius:10px;background:var(--bg4);border:1px solid var(--border2);color:var(--amber2);}
 .badge.neutral{color:var(--text3);}
@@ -227,7 +229,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .vinyl-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:17px;height:17px;border-radius:50%;background:var(--amber);display:flex;align-items:center;justify-content:center;font-size:9px;}
 .np-info{display:flex;flex-direction:column;gap:2px;min-width:0;}
 .np-eyebrow{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--amber);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.np-title{font-family:'Syne',serif;font-size:14px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.np-title{display:block;font-family:'Syne',serif;font-size:14px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .np-empty{color:var(--text3);font-size:12px;font-style:italic;}
 .np-badges{display:none;}
 @media(max-width:660px){.np-badges{display:flex;gap:5px;margin-top:3px;flex-wrap:wrap;}}
@@ -442,7 +444,9 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
 const keyLabel=(song:{detectedRoot:number|null,detectedMode:'major'|'minor'|null,pitch:number}):string|null=>{
   if(song.detectedRoot===null||song.detectedMode===null) return null;
   const root=((song.detectedRoot+song.pitch)%12+12)%12;
-  return song.detectedMode==='major'?NOTE_NAMES[root]:`${NOTE_NAMES[root]}m`;
+  if(song.detectedMode==='major') return NOTE_NAMES[root];
+  const relMajor=NOTE_NAMES[(root+3)%12];
+  return `${NOTE_NAMES[root]}m (${relMajor})`;
 };
 
 /* Simple semaphore to cap concurrent detection jobs */
@@ -465,6 +469,29 @@ const IconNext=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="current
 const IconPlay=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
 const IconPause=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>;
 const IconPlaySm=()=><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
+
+/* Scrolls overflowing text after a pause so the full title is readable */
+function MarqueeText({text,className}:{text:string,className?:string}){
+  const ref=useRef<HTMLSpanElement>(null);
+  const [dist,setDist]=useState(0);
+  useEffect(()=>{
+    const el=ref.current; if(!el) return;
+    const measure=()=>setDist(Math.max(0,el.scrollWidth-el.clientWidth-1));
+    measure();
+    const ro=new ResizeObserver(measure); ro.observe(el);
+    return()=>ro.disconnect();
+  },[text]);
+  return(
+    <span ref={ref} className={className}
+      style={dist>0?{textOverflow:'clip'}:undefined}>
+      <span style={dist>0?{
+        display:'inline-block',
+        animation:`mq-scroll ${Math.max(6,3+dist/30)}s ease-in-out infinite`,
+        ['--mq' as string]:'-'+dist+'px'
+      } as React.CSSProperties:undefined}>{text}</span>
+    </span>
+  );
+}
 
 export default function WorshipSetlist() {
   const [songs,      setSongs]      = useState([]);
@@ -1067,7 +1094,7 @@ export default function WorshipSetlist() {
                             <span/><span/><span/>
                           </div>
                           <div className="song-num">{idx===playingIdx&&isPlaying?<IconPlaySm/>:idx+1}</div>
-                          <span className="song-name" title={song.name}>{song.name}</span>
+                          <MarqueeText className="song-name" text={song.name}/>
                           <div className="song-badges">
                             {keyLabel(song)?(
                               <span className="badge key">Key: {keyLabel(song)}</span>
@@ -1189,7 +1216,7 @@ export default function WorshipSetlist() {
                     Now Playing · {playingIdx+1}/{songs.length}
                     {keyLabel(currentSong)&&<> · <span style={{color:'var(--amber3)'}}>Key: {keyLabel(currentSong)}</span></>}
                   </div>
-                  <div className="np-title">{currentSong.name}</div>
+                  <MarqueeText className="np-title" text={currentSong.name}/>
                   <div className="np-badges">
                     {keyLabel(currentSong)&&<div className="np-badge" style={{color:'var(--amber3)',borderColor:'var(--amber)'}}>Key: {keyLabel(currentSong)}</div>}
                     <div className="np-badge">{pitchLabel(currentSong.pitch)} semitones</div>
