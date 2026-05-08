@@ -258,7 +258,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .t-btn.play-btn{min-width:58px;min-height:58px;background:var(--amber);border-color:var(--amber);color:#fff;}
 .t-btn.play-btn:hover:not(:disabled){background:var(--amber2);border-color:var(--amber2);}
 .t-btn:disabled{opacity:.2;cursor:not-allowed;}
-.theme-btn{background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:6px 10px;font-size:11px;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:5px;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;}
+.theme-btn{background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:6px 10px;font-size:11px;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:5px;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;margin-left:auto;}
 .theme-btn:hover{border-color:var(--amber);color:var(--amber);}
 .theme-dropdown{position:absolute;top:58px;right:12px;z-index:100;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4);min-width:160px;}
 .theme-option{padding:11px 16px;font-size:13px;cursor:pointer;transition:background .12s;display:flex;align-items:center;gap:8px;-webkit-tap-highlight-color:transparent;}
@@ -274,7 +274,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
   .theme-btn-circle{display:block;}
 }
 /* Install button */
-.install-btn{display:flex;align-items:center;gap:4px;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:6px;padding:4px 8px;font-size:10px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;margin-left:auto;}
+.install-btn{display:flex;align-items:center;gap:4px;background:none;border:1px solid var(--border2);color:var(--text2);border-radius:6px;padding:4px 8px;font-size:10px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;}
 .install-btn:hover{border-color:var(--amber);color:var(--amber);}
 @media(max-width:660px){.install-btn{padding:4px 7px;font-size:10px;}}
 /* iOS install modal */
