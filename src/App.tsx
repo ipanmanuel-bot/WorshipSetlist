@@ -1109,6 +1109,29 @@ export default function WorshipSetlist() {
     finally{setExportingId(null);}
   },[]);
 
+  const runKeyDetect=(id:string,audioBuffer:AudioBuffer)=>{
+    setKeyDetecting(prev=>new Set(prev).add(id));
+    const run=async()=>{
+      while(_detectingCount>=MAX_DETECT) await new Promise(r=>setTimeout(r,200));
+      _detectingCount++;
+      try{
+        const result=await detectKey(audioBuffer);
+        if(result){
+          setSongs(prev=>{
+            if(!prev.find(s=>s.id===id)) return prev;
+            return prev.map(s=>s.id===id?{...s,detectedRoot:result.root,detectedMode:result.mode}:s);
+          });
+          dbPatchKey(id,result.root,result.mode).catch(()=>{});
+        }
+      }catch(e){console.warn('Key detection failed:',e);}
+      finally{
+        _detectingCount--;
+        setKeyDetecting(prev=>{const n=new Set(prev);n.delete(id);return n;});
+      }
+    };
+    run();
+  };
+
   const loadFiles=async files=>{
     const ctx=getCtx();
     const loaded=await Promise.all(
@@ -1132,28 +1155,7 @@ export default function WorshipSetlist() {
       return next;
     });
     /* Fire key detection for each new song (rate-limited) */
-    loaded.forEach(song=>{
-      setKeyDetecting(prev=>new Set(prev).add(song.id));
-      const run=async()=>{
-        while(_detectingCount>=MAX_DETECT) await new Promise(r=>setTimeout(r,200));
-        _detectingCount++;
-        try{
-          const result=await detectKey(song.audioBuffer);
-          if(result){
-            setSongs(prev=>{
-              if(!prev.find(s=>s.id===song.id)) return prev;
-              return prev.map(s=>s.id===song.id?{...s,detectedRoot:result.root,detectedMode:result.mode}:s);
-            });
-            dbPatchKey(song.id,result.root,result.mode).catch(()=>{});
-          }
-        }catch(e){console.warn('Key detection failed:',e);}
-        finally{
-          _detectingCount--;
-          setKeyDetecting(prev=>{const n=new Set(prev);n.delete(song.id);return n;});
-        }
-      };
-      run();
-    });
+    loaded.forEach(song=>runKeyDetect(song.id,song.audioBuffer));
   };
   loadFilesRef.current=loadFiles;
 
@@ -1308,7 +1310,7 @@ export default function WorshipSetlist() {
                           <MarqueeText className="song-name" text={song.name}/>
                           <div className="song-badges">
                             {keyLabel(song)?(
-                              <span className="badge key">Key: {keyLabel(song)}</span>
+                              <span className="badge key" title="Tap to re-detect key" style={{cursor:'pointer'}} onClick={e=>{e.stopPropagation();runKeyDetect(song.id,song.audioBuffer);}}>Key: {keyLabel(song)}</span>
                             ):keyDetecting.has(song.id)?(
                               <span className="badge neutral" style={{fontSize:9}}>key…</span>
                             ):null}
