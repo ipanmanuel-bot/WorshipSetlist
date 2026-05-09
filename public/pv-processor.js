@@ -101,6 +101,7 @@ class PVProcessor extends AudioWorkletProcessor {
         this._rw  = new Float32Array(RSIZE);
         this._lp  = Array.from({ length: this._nc }, () => new Float32Array(N));
         this._sp  = Array.from({ length: this._nc }, () => new Float32Array(N));
+        this._primePhases();
         this._on  = true;
         this._ended = false;
 
@@ -112,6 +113,7 @@ class PVProcessor extends AudioWorkletProcessor {
         this._rw.fill(0);
         this._lp.forEach(a => a.fill(0));
         this._sp.forEach(a => a.fill(0));
+        this._primePhases();
         this._on = true;
         this._ended = false;
 
@@ -119,6 +121,38 @@ class PVProcessor extends AudioWorkletProcessor {
         this._on = false;
       }
     };
+  }
+
+  /* Initialise _lp and _sp from the actual signal phases at the seek point.
+     Without this, _sp starts at zero → wrong synthesis phase → audible pitch
+     glitch for the first few frames after every seek/load.
+     _lp = phase of analysis frame at (_ip - HA)  → correct dp on first frame
+     _sp = phase of analysis frame at (_ip)        → correct output phase at t=0 */
+  _primePhases() {
+    const re = this._re, im = this._im;
+    for (let c = 0; c < this._nc; c++) {
+      const inp = this._ch[c];
+      const lp  = this._lp[c];
+      const sp  = this._sp[c];
+
+      /* Previous frame position: _ip - HA */
+      re.fill(0); im.fill(0);
+      for (let i = 0; i < N; i++) {
+        const s = (this._ip - HA) - HALF + i;
+        re[i] = (s >= 0 && s < this._il) ? inp[s] * W[i] : 0;
+      }
+      fft(re, im, false);
+      for (let k = 0; k <= HALF; k++) lp[k] = Math.atan2(im[k], re[k]);
+
+      /* Current frame position: _ip */
+      re.fill(0); im.fill(0);
+      for (let i = 0; i < N; i++) {
+        const s = this._ip - HALF + i;
+        re[i] = (s >= 0 && s < this._il) ? inp[s] * W[i] : 0;
+      }
+      fft(re, im, false);
+      for (let k = 0; k <= HALF; k++) sp[k] = Math.atan2(im[k], re[k]);
+    }
   }
 
   /* Committed ring samples (fully overlap-added, safe to drain) */

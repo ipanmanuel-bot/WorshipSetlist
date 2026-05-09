@@ -684,6 +684,7 @@ export default function WorshipSetlist() {
   const progFillRef     = useRef<HTMLDivElement>(null);
   const progThumbRef    = useRef<HTMLDivElement>(null);
   const progCurTimeRef  = useRef<HTMLSpanElement>(null);
+  const loadedSongIdRef = useRef<string|null>(null);
 
   const songsRef      = useRef(songs);
   const activeIdxRef  = useRef(activeIdx);
@@ -931,47 +932,13 @@ export default function WorshipSetlist() {
     busyRef.current=true;
     const song=songsRef.current[idx];
     if(!song){ busyRef.current=false; return; }
-    stopSource();
     const ctx=getCtx(); if(ctx.state==="suspended") await ctx.resume();
     try{
-      await ensureWorklet();
       const ab=song.audioBuffer;
-      const numCh=ab.numberOfChannels;
       const tempoFactor=song.tempo/100;
       const outDuration=ab.duration/tempoFactor;
-
-      /* Copy channel data so the AudioBuffer stays intact for export */
-      const ch:Float32Array[]=[];
-      for(let c=0;c<numCh;c++) ch.push(new Float32Array(ab.getChannelData(c)));
-
       const startSample=Math.round(offset*tempoFactor*ab.sampleRate);
-
-      const node=new AudioWorkletNode(ctx,'pv-proc',{
-        numberOfOutputs:1, outputChannelCount:[numCh]
-      });
-      node.parameters.get('pitch').value=song.pitch;
-      node.parameters.get('tempo').value=tempoFactor;
-      /* Transfer copies to worklet (zero-copy after slice above) */
-      node.port.postMessage({t:'load',ch,s:startSample},ch.map(f=>f.buffer));
-
       const gen=++genRef.current;
-      node.port.onmessage=({data})=>{
-        if(data.t==='ended') advance();
-      };
-
-      /* Route through MediaStream bridge if available (iOS background audio),
-         otherwise fall back to direct ctx.destination output. */
-      if(destNodeRef.current){
-        node.connect(destNodeRef.current);
-        const el=audioOutRef.current;
-        if(el&&el.paused) el.play().catch(()=>{ node.connect(ctx.destination); });
-      } else {
-        node.connect(ctx.destination);
-      }
-      workletNodeRef.current=node;
-      durationRef.current=outDuration;
-      setDuration(outDuration); setProgress(offset);
-      startTimeRef.current=ctx.currentTime-offset;
 
       const advance=()=>{
         if(!isPlayingRef.current||genRef.current!==gen) return;
@@ -979,12 +946,10 @@ export default function WorshipSetlist() {
         if(next<songsRef.current.length){setActiveIdx(next);setPlayingIdx(next);pausedAtRef.current=0;playFrom(next,0);}
         else{setIsPlaying(false);setPlayingIdx(null);setProgress(0);pausedAtRef.current=0;}
       };
-
       const tick=()=>{
         const el=ctx.currentTime-startTimeRef.current;
         const dur=durationRef.current;
         const clamped=Math.min(el,dur);
-        /* Update progress bar and timer via direct DOM — avoids React re-renders at 60fps */
         if(dur>0){
           const pct=(clamped/dur)*100;
           if(progFillRef.current) progFillRef.current.style.width=pct+'%';
@@ -992,8 +957,48 @@ export default function WorshipSetlist() {
         }
         if(progCurTimeRef.current) progCurTimeRef.current.textContent=fmt(clamped);
         if(el<dur) rafRef.current=requestAnimationFrame(tick);
-        else advance(); /* duration elapsed — go to next song */
+        else advance();
       };
+
+      /* Seek within the same song: reuse the existing node.
+         No data transfer, no node teardown — just reset the worklet's
+         ring buffer and synthesis phases to the new position. */
+      const canSeek=workletNodeRef.current!==null&&loadedSongIdRef.current===song.id;
+      if(canSeek){
+        if(rafRef.current) cancelAnimationFrame(rafRef.current);
+        const node=workletNodeRef.current!;
+        node.parameters.get('pitch').value=song.pitch;
+        node.parameters.get('tempo').value=tempoFactor;
+        node.port.postMessage({t:'seek',s:startSample});
+        node.port.onmessage=({data})=>{ if(data.t==='ended') advance(); };
+      } else {
+        /* Different song or first play: full node creation + data transfer */
+        stopSource();
+        await ensureWorklet();
+        const numCh=ab.numberOfChannels;
+        const ch:Float32Array[]=[];
+        for(let c=0;c<numCh;c++) ch.push(new Float32Array(ab.getChannelData(c)));
+        const node=new AudioWorkletNode(ctx,'pv-proc',{
+          numberOfOutputs:1, outputChannelCount:[numCh]
+        });
+        node.parameters.get('pitch').value=song.pitch;
+        node.parameters.get('tempo').value=tempoFactor;
+        node.port.postMessage({t:'load',ch,s:startSample},ch.map(f=>f.buffer));
+        node.port.onmessage=({data})=>{ if(data.t==='ended') advance(); };
+        if(destNodeRef.current){
+          node.connect(destNodeRef.current);
+          const el=audioOutRef.current;
+          if(el&&el.paused) el.play().catch(()=>{ node.connect(ctx.destination); });
+        } else {
+          node.connect(ctx.destination);
+        }
+        workletNodeRef.current=node;
+        loadedSongIdRef.current=song.id;
+      }
+
+      durationRef.current=outDuration;
+      setDuration(outDuration); setProgress(offset);
+      startTimeRef.current=ctx.currentTime-offset;
       rafRef.current=requestAnimationFrame(tick);
       setPlayingIdx(idx); setActiveIdx(idx); setIsPlaying(true);
     }catch(e){console.error(e);}
@@ -1034,7 +1039,13 @@ export default function WorshipSetlist() {
     e.preventDefault();
     const bar=e.currentTarget;
     const wasPlaying=isPlayingRef.current;
-    if(wasPlaying){ stopSource(); setIsPlaying(false); }
+    if(wasPlaying){
+      /* Pause the worklet output but keep the node alive so playFrom can
+         reuse it via a fast 'seek' instead of full node recreation. */
+      if(workletNodeRef.current) try{workletNodeRef.current.port.postMessage({t:'stop'});}catch{}
+      if(rafRef.current) cancelAnimationFrame(rafRef.current);
+      setIsPlaying(false);
+    }
     const getX=ev=>ev.touches?ev.touches[0].clientX:ev.clientX;
     const onMove=ev=>{
       const rect=bar.getBoundingClientRect();
