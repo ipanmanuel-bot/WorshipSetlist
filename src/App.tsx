@@ -434,10 +434,9 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
     return{root:bRoot,mode:bMode};
   };
 
-  /* Process one HPCP frame and add to an accumulator array.
-     Returns the frame weight (0 if frame should be skipped). */
+  /* Process one HPCP frame — single FFT, accumulates into up to two arrays. */
   let prevRms=0;
-  const processFrame=(pos:number,acc:number[],accW:{v:number})=>{
+  const processFrame=(pos:number,acc:number[],accW:{v:number},acc2?:number[],acc2W?:{v:number})=>{
     for(let i=0;i<CHROMA_N;i++){re[i]=mono[pos+i]*CHROMA_WIN[i];im[i]=0;}
     _fft(re,im,false);
     for(let k=0;k<=N2;k++) mag[k]=Math.sqrt(re[k]*re[k]+im[k]*im[k]);
@@ -480,8 +479,12 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
       const concentration=Math.max(0,pk/Math.max(mn,1e-9)-1);
       const transientPenalty=prevRms>1e-6&&rms/prevRms>3?0.4:1.0;
       const w=rms*concentration*transientPenalty;
-      for(let i=0;i<12;i++) acc[i]+=norm[i]*w;
+      for(let i=0;i<12;i++){
+        acc[i]+=norm[i]*w;
+        if(acc2) acc2[i]+=norm[i]*w;
+      }
       accW.v+=w;
+      if(acc2W) acc2W.v+=w;
     }
     prevRms=rms;
   };
@@ -501,8 +504,7 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
   let frameCount=0;
 
   for(let pos=analysisStart;pos+CHROMA_N<=maxSamples;pos+=hop){
-    processFrame(pos,blockChroma,blockW);
-    processFrame(pos,globalChroma,globalW); // dual-accumulate for fallback
+    processFrame(pos,blockChroma,blockW,globalChroma,globalW); // single FFT, dual accumulate
     blockF++;
     frameCount++;
     if(frameCount%32===0) await new Promise(r=>setTimeout(r,0));
@@ -533,9 +535,76 @@ const keyLabel=(song:{detectedRoot:number|null,detectedMode:'major'|'minor'|null
   return `${NOTE_NAMES[root]}m (${relMajor})`;
 };
 
+/* ── Web Worker for key detection ───────────────────────────
+   Resample on main thread (requires AudioContext API), then send
+   raw Float32Array to the worker so the heavy FFT loop runs
+   completely off the main thread — no more audio glitches. */
+let _keyWorker:Worker|null=null;
+const _keyWorkerPending=new Map<string,(r:{root:number,mode:'major'|'minor'}|null)=>void>();
+
+function getKeyWorker():Worker{
+  if(!_keyWorker){
+    _keyWorker=new Worker('/key-worker.js');
+    _keyWorker.onmessage=(e)=>{
+      const{jobId,result}=e.data;
+      const resolve=_keyWorkerPending.get(jobId);
+      if(resolve){resolve(result);_keyWorkerPending.delete(jobId);}
+    };
+    _keyWorker.onerror=(e)=>{
+      console.warn('[KeyWorker] error:',e);
+      for(const[,resolve] of _keyWorkerPending) resolve(null);
+      _keyWorkerPending.clear();
+      _keyWorker=null;
+    };
+  }
+  return _keyWorker;
+}
+
+async function resampleToMono(audioBuffer:AudioBuffer):Promise<{mono:Float32Array,sr:number}>{
+  const fromSr=audioBuffer.sampleRate;
+  if(fromSr===DETECT_SR){
+    const nc=audioBuffer.numberOfChannels;
+    const mono=new Float32Array(audioBuffer.length);
+    for(let c=0;c<nc;c++){const ch=audioBuffer.getChannelData(c);for(let i=0;i<audioBuffer.length;i++) mono[i]+=ch[i]/nc;}
+    return{mono,sr:DETECT_SR};
+  }
+  try{
+    const len=Math.ceil(audioBuffer.duration*DETECT_SR);
+    const off=new OfflineAudioContext(1,len,DETECT_SR);
+    const src=off.createBufferSource();
+    src.buffer=audioBuffer;src.connect(off.destination);src.start(0);
+    const resampled=await off.startRendering();
+    const ch=resampled.getChannelData(0);
+    const mono=new Float32Array(ch.length);
+    mono.set(ch);
+    return{mono,sr:DETECT_SR};
+  }catch{
+    const nc=audioBuffer.numberOfChannels;
+    const mono=new Float32Array(audioBuffer.length);
+    for(let c=0;c<nc;c++){const ch=audioBuffer.getChannelData(c);for(let i=0;i<audioBuffer.length;i++) mono[i]+=ch[i]/nc;}
+    return{mono,sr:fromSr};
+  }
+}
+
+async function detectKeyWorker(audioBuffer:AudioBuffer):Promise<{root:number,mode:'major'|'minor'}|null>{
+  if(audioBuffer.duration<1) return null;
+  const{mono,sr}=await resampleToMono(audioBuffer);
+  const jobId=Math.random().toString(36).slice(2,9);
+  return new Promise((resolve)=>{
+    try{
+      const worker=getKeyWorker();
+      _keyWorkerPending.set(jobId,resolve);
+      worker.postMessage({jobId,mono,sr},[mono.buffer]);
+    }catch(e){
+      /* Worker unavailable — fall back to main-thread detection */
+      detectKey(audioBuffer).then(resolve).catch(()=>resolve(null));
+    }
+  });
+}
+
 /* Simple semaphore to cap concurrent detection jobs */
 let _detectingCount=0;
-const MAX_DETECT=2;
+const MAX_DETECT=1;
 
 /* ─── lamejs loader ──────────────────────────────────────── */
 const loadLame=()=>new Promise<any>((resolve,reject)=>{
@@ -612,6 +681,9 @@ export default function WorshipSetlist() {
   const dragSrcRef      = useRef(null);
   const floatRef        = useRef(null);
   const touchSrcIdx     = useRef(null);
+  const progFillRef     = useRef<HTMLDivElement>(null);
+  const progThumbRef    = useRef<HTMLDivElement>(null);
+  const progCurTimeRef  = useRef<HTMLSpanElement>(null);
 
   const songsRef      = useRef(songs);
   const activeIdxRef  = useRef(activeIdx);
@@ -910,8 +982,16 @@ export default function WorshipSetlist() {
 
       const tick=()=>{
         const el=ctx.currentTime-startTimeRef.current;
-        setProgress(Math.min(el,durationRef.current));
-        if(el<durationRef.current) rafRef.current=requestAnimationFrame(tick);
+        const dur=durationRef.current;
+        const clamped=Math.min(el,dur);
+        /* Update progress bar and timer via direct DOM — avoids React re-renders at 60fps */
+        if(dur>0){
+          const pct=(clamped/dur)*100;
+          if(progFillRef.current) progFillRef.current.style.width=pct+'%';
+          if(progThumbRef.current) progThumbRef.current.style.left=pct+'%';
+        }
+        if(progCurTimeRef.current) progCurTimeRef.current.textContent=fmt(clamped);
+        if(el<dur) rafRef.current=requestAnimationFrame(tick);
         else advance(); /* duration elapsed — go to next song */
       };
       rafRef.current=requestAnimationFrame(tick);
@@ -1138,7 +1218,7 @@ export default function WorshipSetlist() {
       while(_detectingCount>=MAX_DETECT) await new Promise(r=>setTimeout(r,200));
       _detectingCount++;
       try{
-        const result=await detectKey(audioBuffer);
+        const result=await detectKeyWorker(audioBuffer);
         if(result){
           setSongs(prev=>{
             if(!prev.find(s=>s.id===id)) return prev;
@@ -1472,10 +1552,10 @@ export default function WorshipSetlist() {
                 onClick={handleProgressClick}
                 onMouseDown={handleScrubStart}
                 onTouchStart={handleScrubStart}>
-                <div className="prog-fill" style={{width:`${pct}%`}}/>
-                <div className="prog-thumb" style={{left:`${pct}%`}}/>
+                <div className="prog-fill" ref={progFillRef} style={{width:`${pct}%`}}/>
+                <div className="prog-thumb" ref={progThumbRef} style={{left:`${pct}%`}}/>
               </div>
-              <div className="prog-times"><span>{fmt(progress)}</span><span>{fmt(duration)}</span></div>
+              <div className="prog-times"><span ref={progCurTimeRef}>{fmt(progress)}</span><span>{fmt(duration)}</span></div>
             </div>
 
             <div className="transport">
