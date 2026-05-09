@@ -520,7 +520,6 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
      KS alone is known to confuse relative major/minor pairs (e.g. Am vs C);
      Temperley profiles weight the tonic more distinctly, reducing that error. */
   let bestR=-Infinity,bestRoot=0,bestMode:'major'|'minor'='major';
-  const dbgScores:string[]=[];
   for(let root=0;root<12;root++){
     const ksM=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
     const ksm=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
@@ -528,14 +527,9 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
     const tpm=Array.from({length:12},(_,i)=>TEMP_MINOR[(i-root+12)%12]);
     const rMaj=(_pearson(sc,ksM)+_pearson(sc,tpM))/2;
     const rMin=(_pearson(sc,ksm)+_pearson(sc,tpm))/2;
-    dbgScores.push(`${NOTE_NAMES[root]}maj:${rMaj.toFixed(3)} ${NOTE_NAMES[root]}min:${rMin.toFixed(3)}`);
     if(rMaj>bestR){bestR=rMaj;bestRoot=root;bestMode='major';}
     if(rMin>bestR){bestR=rMin;bestRoot=root;bestMode='minor';}
   }
-  console.log('[detectKey] sr='+sr+' frames='+frameCount+' weight='+totalWeight.toFixed(3));
-  console.log('[detectKey] chroma='+NOTE_NAMES.map((n,i)=>n+':'+chroma[i].toFixed(3)).join(' '));
-  console.log('[detectKey] scores='+dbgScores.join('  '));
-  console.log('[detectKey] result='+NOTE_NAMES[bestRoot]+' '+bestMode);
   return{root:bestRoot,mode:bestMode};
 }
 
