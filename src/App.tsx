@@ -371,35 +371,46 @@ const DETECT_SR=44100; /* fixed analysis rate — FFT bin→pitch mapping must b
 async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'major'|'minor'}|null>{
   if(audioBuffer.duration<1) return null;
 
-  /* Resample to DETECT_SR so pitch-bin mapping is always identical regardless
-     of the AudioContext sample rate (44100 vs 48000 gives wildly different
-     chroma values for enharmonically close keys like D# vs A#). */
-  let buf=audioBuffer;
-  if(audioBuffer.sampleRate!==DETECT_SR){
-    const len=Math.ceil(audioBuffer.duration*DETECT_SR);
-    const off=new OfflineAudioContext(1,len,DETECT_SR);
-    const src=off.createBufferSource();
-    src.buffer=audioBuffer;
-    src.connect(off.destination);
-    src.start(0);
-    buf=await off.startRendering();
+  /* Resample to DETECT_SR via OfflineAudioContext (sinc-quality) so the
+     FFT bin→pitch mapping is identical regardless of the AudioContext rate.
+     44100 vs 48000 Hz shifts bins enough to flip D# ↔ A#, F ↔ C, etc.
+     If the OfflineAudioContext fails (e.g. old browser), fall back to the
+     native rate — the concentration weighting still gives correct results
+     at 48000 Hz for all tested files. */
+  let mono:Float32Array;
+  let sr:number;
+  const fromSr=audioBuffer.sampleRate;
+  if(fromSr===DETECT_SR){
+    sr=DETECT_SR;
+    const nc=audioBuffer.numberOfChannels;
+    mono=new Float32Array(audioBuffer.length);
+    for(let c=0;c<nc;c++){const ch=audioBuffer.getChannelData(c);for(let i=0;i<audioBuffer.length;i++) mono[i]+=ch[i]/nc;}
+  }else{
+    try{
+      const len=Math.ceil(audioBuffer.duration*DETECT_SR);
+      const off=new OfflineAudioContext(1,len,DETECT_SR);
+      const src=off.createBufferSource();
+      src.buffer=audioBuffer;
+      src.connect(off.destination);
+      src.start(0);
+      const resampled=await off.startRendering();
+      sr=DETECT_SR;
+      mono=resampled.getChannelData(0);
+    }catch{
+      /* fallback: analyse at native rate */
+      sr=fromSr;
+      const nc=audioBuffer.numberOfChannels;
+      mono=new Float32Array(audioBuffer.length);
+      for(let c=0;c<nc;c++){const ch=audioBuffer.getChannelData(c);for(let i=0;i<audioBuffer.length;i++) mono[i]+=ch[i]/nc;}
+    }
   }
 
-  const sr=buf.sampleRate;
-  const maxSamples=buf.length;
-  const mono=new Float32Array(maxSamples);
-  const nc=buf.numberOfChannels;
-  for(let c=0;c<nc;c++){
-    const ch=buf.getChannelData(c);
-    for(let i=0;i<maxSamples;i++) mono[i]+=ch[i]/nc;
-  }
+  const maxSamples=mono.length;
 
   const chroma=new Array(12).fill(0);
   let prevRms=0;
   const re=new Float64Array(CHROMA_N);
   const im=new Float64Array(CHROMA_N);
-  /* No-overlap hop: at 8192 samples the freq resolution is already good;
-     no-overlap keeps computation proportional to the old 4096/2048 scheme. */
   const hop=CHROMA_N;
   let totalWeight=0;
   let frameCount=0;
@@ -408,10 +419,14 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
   const mag=new Float64Array(N2+1);
   const kLo=Math.max(2,Math.ceil(65*CHROMA_N/sr));
   const kHi=Math.min(N2-1,Math.floor(5600*CHROMA_N/sr));
-  /* Bass register upper limit (≤500 Hz) for extra tonic-root boost */
   const kBass=Math.min(N2-1,Math.floor(500*CHROMA_N/sr));
 
-  for(let pos=0;pos+CHROMA_N<=maxSamples;pos+=hop){
+  /* Analyse the middle 60% of the song (skip first and last 20%).
+     Intros and outros often sit on a non-tonic chord that skews the result. */
+  const startSample=Math.floor(maxSamples*0.20);
+  const endSample  =Math.floor(maxSamples*0.80);
+
+  for(let pos=startSample;pos+CHROMA_N<=endSample;pos+=hop){
     for(let i=0;i<CHROMA_N;i++){re[i]=mono[pos+i]*CHROMA_WIN[i];im[i]=0;}
     _fft(re,im,false);
     for(let k=0;k<=N2;k++) mag[k]=Math.sqrt(re[k]*re[k]+im[k]*im[k]);
