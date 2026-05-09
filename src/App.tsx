@@ -366,19 +366,36 @@ function _pearson(x:number[],y:number[]){
 
 const NOTE_NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 
+const DETECT_SR=44100; /* fixed analysis rate — FFT bin→pitch mapping must be consistent */
+
 async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'major'|'minor'}|null>{
   if(audioBuffer.duration<1) return null;
 
-  const sr=audioBuffer.sampleRate;
-  const maxSamples=audioBuffer.length;
+  /* Resample to DETECT_SR so pitch-bin mapping is always identical regardless
+     of the AudioContext sample rate (44100 vs 48000 gives wildly different
+     chroma values for enharmonically close keys like D# vs A#). */
+  let buf=audioBuffer;
+  if(audioBuffer.sampleRate!==DETECT_SR){
+    const len=Math.ceil(audioBuffer.duration*DETECT_SR);
+    const off=new OfflineAudioContext(1,len,DETECT_SR);
+    const src=off.createBufferSource();
+    src.buffer=audioBuffer;
+    src.connect(off.destination);
+    src.start(0);
+    buf=await off.startRendering();
+  }
+
+  const sr=buf.sampleRate;
+  const maxSamples=buf.length;
   const mono=new Float32Array(maxSamples);
-  const nc=audioBuffer.numberOfChannels;
+  const nc=buf.numberOfChannels;
   for(let c=0;c<nc;c++){
-    const ch=audioBuffer.getChannelData(c);
+    const ch=buf.getChannelData(c);
     for(let i=0;i<maxSamples;i++) mono[i]+=ch[i]/nc;
   }
 
   const chroma=new Array(12).fill(0);
+  let prevRms=0;
   const re=new Float64Array(CHROMA_N);
   const im=new Float64Array(CHROMA_N);
   /* No-overlap hop: at 8192 samples the freq resolution is already good;
@@ -404,7 +421,7 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
     let rms2=0;
     for(let i=0;i<CHROMA_N;i++) rms2+=mono[pos+i]*mono[pos+i];
     const rms=Math.sqrt(rms2/CHROMA_N);
-    if(rms<1e-5){frameCount++;continue;}
+    if(rms<1e-5){prevRms=rms;frameCount++;continue;}
 
     let mxf=0;
     for(let k=kLo;k<=kHi;k++) if(mag[k]>mxf) mxf=mag[k];
@@ -450,9 +467,28 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
     /* Normalise frame chroma, then accumulate weighted by frame RMS */
     const ft=fc.reduce((a,b)=>a+b,0);
     if(ft>1e-6){
-      for(let i=0;i<12;i++) chroma[i]+=(fc[i]/ft)*rms;
-      totalWeight+=rms;
+      const norm=fc.map(v=>v/ft);
+
+      /* ── Chroma concentration weight ─────────────────────────────────
+         Tonal frames (chord/melody) concentrate energy in a few bins →
+         high peakedness. Metronome/noise frames spread energy flat across
+         all 12 bins → peakedness ≈ 1. Weight by (peak/mean − 1) so truly
+         flat frames contribute nearly nothing. */
+      const mn=norm.reduce((a,b)=>a+b,0)/12;
+      const pk=Math.max(...norm);
+      const concentration=Math.max(0,pk/Math.max(mn,1e-9)-1);
+
+      /* ── Transient onset suppression ─────────────────────────────────
+         A sudden energy spike vs the previous frame signals a percussive
+         onset (metronome click, drum hit). Down-weight by 60% when the
+         current frame's RMS is more than 3× the previous frame's. */
+      const transientPenalty=prevRms>1e-6&&rms/prevRms>3?0.4:1.0;
+
+      const w=rms*concentration*transientPenalty;
+      for(let i=0;i<12;i++) chroma[i]+=norm[i]*w;
+      totalWeight+=w;
     }
+    prevRms=rms;
 
     frameCount++;
     if(frameCount%32===0) await new Promise(r=>setTimeout(r,0));
@@ -1089,6 +1125,29 @@ export default function WorshipSetlist() {
     finally{setExportingId(null);}
   },[]);
 
+  const runKeyDetect=(id:string,audioBuffer:AudioBuffer)=>{
+    setKeyDetecting(prev=>new Set(prev).add(id));
+    const run=async()=>{
+      while(_detectingCount>=MAX_DETECT) await new Promise(r=>setTimeout(r,200));
+      _detectingCount++;
+      try{
+        const result=await detectKey(audioBuffer);
+        if(result){
+          setSongs(prev=>{
+            if(!prev.find(s=>s.id===id)) return prev;
+            return prev.map(s=>s.id===id?{...s,detectedRoot:result.root,detectedMode:result.mode}:s);
+          });
+          dbPatchKey(id,result.root,result.mode).catch(()=>{});
+        }
+      }catch(e){console.warn('Key detection failed:',e);}
+      finally{
+        _detectingCount--;
+        setKeyDetecting(prev=>{const n=new Set(prev);n.delete(id);return n;});
+      }
+    };
+    run();
+  };
+
   const loadFiles=async files=>{
     const ctx=getCtx();
     const loaded=await Promise.all(
@@ -1112,28 +1171,7 @@ export default function WorshipSetlist() {
       return next;
     });
     /* Fire key detection for each new song (rate-limited) */
-    loaded.forEach(song=>{
-      setKeyDetecting(prev=>new Set(prev).add(song.id));
-      const run=async()=>{
-        while(_detectingCount>=MAX_DETECT) await new Promise(r=>setTimeout(r,200));
-        _detectingCount++;
-        try{
-          const result=await detectKey(song.audioBuffer);
-          if(result){
-            setSongs(prev=>{
-              if(!prev.find(s=>s.id===song.id)) return prev;
-              return prev.map(s=>s.id===song.id?{...s,detectedRoot:result.root,detectedMode:result.mode}:s);
-            });
-            dbPatchKey(song.id,result.root,result.mode).catch(()=>{});
-          }
-        }catch(e){console.warn('Key detection failed:',e);}
-        finally{
-          _detectingCount--;
-          setKeyDetecting(prev=>{const n=new Set(prev);n.delete(song.id);return n;});
-        }
-      };
-      run();
-    });
+    loaded.forEach(song=>runKeyDetect(song.id,song.audioBuffer));
   };
   loadFilesRef.current=loadFiles;
 
@@ -1288,7 +1326,7 @@ export default function WorshipSetlist() {
                           <MarqueeText className="song-name" text={song.name}/>
                           <div className="song-badges">
                             {keyLabel(song)?(
-                              <span className="badge key">Key: {keyLabel(song)}</span>
+                              <span className="badge key" title="Tap to re-detect key" style={{cursor:'pointer'}} onClick={e=>{e.stopPropagation();runKeyDetect(song.id,song.audioBuffer);}}>Key: {keyLabel(song)}</span>
                             ):keyDetecting.has(song.id)?(
                               <span className="badge neutral" style={{fontSize:9}}>key…</span>
                             ):null}
