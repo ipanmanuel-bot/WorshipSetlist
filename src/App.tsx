@@ -379,6 +379,7 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
   }
 
   const chroma=new Array(12).fill(0);
+  let prevRms=0;
   const re=new Float64Array(CHROMA_N);
   const im=new Float64Array(CHROMA_N);
   /* No-overlap hop: at 8192 samples the freq resolution is already good;
@@ -404,7 +405,7 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
     let rms2=0;
     for(let i=0;i<CHROMA_N;i++) rms2+=mono[pos+i]*mono[pos+i];
     const rms=Math.sqrt(rms2/CHROMA_N);
-    if(rms<1e-5){frameCount++;continue;}
+    if(rms<1e-5){prevRms=rms;frameCount++;continue;}
 
     let mxf=0;
     for(let k=kLo;k<=kHi;k++) if(mag[k]>mxf) mxf=mag[k];
@@ -450,9 +451,28 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
     /* Normalise frame chroma, then accumulate weighted by frame RMS */
     const ft=fc.reduce((a,b)=>a+b,0);
     if(ft>1e-6){
-      for(let i=0;i<12;i++) chroma[i]+=(fc[i]/ft)*rms;
-      totalWeight+=rms;
+      const norm=fc.map(v=>v/ft);
+
+      /* ── Chroma concentration weight ─────────────────────────────────
+         Tonal frames (chord/melody) concentrate energy in a few bins →
+         high peakedness. Metronome/noise frames spread energy flat across
+         all 12 bins → peakedness ≈ 1. Weight by (peak/mean − 1) so truly
+         flat frames contribute nearly nothing. */
+      const mn=norm.reduce((a,b)=>a+b,0)/12;
+      const pk=Math.max(...norm);
+      const concentration=Math.max(0,pk/Math.max(mn,1e-9)-1);
+
+      /* ── Transient onset suppression ─────────────────────────────────
+         A sudden energy spike vs the previous frame signals a percussive
+         onset (metronome click, drum hit). Down-weight by 60% when the
+         current frame's RMS is more than 3× the previous frame's. */
+      const transientPenalty=prevRms>1e-6&&rms/prevRms>3?0.4:1.0;
+
+      const w=rms*concentration*transientPenalty;
+      for(let i=0;i<12;i++) chroma[i]+=norm[i]*w;
+      totalWeight+=w;
     }
+    prevRms=rms;
 
     frameCount++;
     if(frameCount%32===0) await new Promise(r=>setTimeout(r,0));
