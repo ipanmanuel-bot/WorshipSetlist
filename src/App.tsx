@@ -407,130 +407,122 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
 
   const maxSamples=mono.length;
 
-  const chroma=new Array(12).fill(0);
-  let prevRms=0;
   const re=new Float64Array(CHROMA_N);
   const im=new Float64Array(CHROMA_N);
   const hop=CHROMA_N;
-  let totalWeight=0;
-  let frameCount=0;
-
   const N2=CHROMA_N>>1;
   const mag=new Float64Array(N2+1);
   const kLo=Math.max(2,Math.ceil(65*CHROMA_N/sr));
   const kHi=Math.min(N2-1,Math.floor(5600*CHROMA_N/sr));
   const kBass=Math.min(N2-1,Math.floor(500*CHROMA_N/sr));
 
-  /* Analyse the middle 60% of the song (skip first and last 20%).
-     Intros and outros often sit on a non-tonic chord that skews the result. */
-  const startSample=Math.floor(maxSamples*0.20);
-  const endSample  =Math.floor(maxSamples*0.80);
+  /* Helper: score a chroma vector → {root, mode} */
+  const scoreChroma=(ch:number[])=>{
+    const sc=new Array(12).fill(0);
+    for(let i=0;i<12;i++) sc[i]=0.2*ch[(i+11)%12]+0.6*ch[i]+0.2*ch[(i+1)%12];
+    let bR=-Infinity,bRoot=0,bMode:'major'|'minor'='major';
+    for(let root=0;root<12;root++){
+      const ksM=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
+      const ksm=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
+      const tpM=Array.from({length:12},(_,i)=>TEMP_MAJOR[(i-root+12)%12]);
+      const tpm=Array.from({length:12},(_,i)=>TEMP_MINOR[(i-root+12)%12]);
+      const rMaj=(_pearson(sc,ksM)+_pearson(sc,tpM))/2;
+      const rMin=(_pearson(sc,ksm)+_pearson(sc,tpm))/2;
+      if(rMaj>bR){bR=rMaj;bRoot=root;bMode='major';}
+      if(rMin>bR){bR=rMin;bRoot=root;bMode='minor';}
+    }
+    return{root:bRoot,mode:bMode};
+  };
 
-  for(let pos=startSample;pos+CHROMA_N<=endSample;pos+=hop){
+  /* Process one HPCP frame and add to an accumulator array.
+     Returns the frame weight (0 if frame should be skipped). */
+  let prevRms=0;
+  const processFrame=(pos:number,acc:number[],accW:{v:number})=>{
     for(let i=0;i<CHROMA_N;i++){re[i]=mono[pos+i]*CHROMA_WIN[i];im[i]=0;}
     _fft(re,im,false);
     for(let k=0;k<=N2;k++) mag[k]=Math.sqrt(re[k]*re[k]+im[k]*im[k]);
-
-    /* Weight this frame by its RMS — chord-dense sections contribute more
-       than silence / reverb tails / intro/outro instrumental pads. */
     let rms2=0;
     for(let i=0;i<CHROMA_N;i++) rms2+=mono[pos+i]*mono[pos+i];
     const rms=Math.sqrt(rms2/CHROMA_N);
-    if(rms<1e-5){prevRms=rms;frameCount++;continue;}
-
+    if(rms<1e-5){prevRms=rms;return;}
     let mxf=0;
     for(let k=kLo;k<=kHi;k++) if(mag[k]>mxf) mxf=mag[k];
-    if(mxf<1e-10){frameCount++;continue;}
-
-    /* HPCP — Harmonic Pitch Class Profile (Gómez 2006):
-       Each spectral peak is treated as the h-th harmonic of a lower
-       fundamental; votes with weight 1/h² and a cosine detuning window. */
+    if(mxf<1e-10){return;}
     const fc=new Array(12).fill(0);
     for(let k=kLo;k<=kHi;k++){
       if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue;
-      const m=mag[k]/mxf;
-      if(m<0.01) continue;
+      const m=mag[k]/mxf; if(m<0.01) continue;
       const f=k*sr/CHROMA_N;
       for(let h=1;h<=8;h++){
-        const ff=f/h;
-        if(ff<65||ff>700) continue;
+        const ff=f/h; if(ff<65||ff>700) continue;
         const midi=69+12*Math.log2(ff/440);
         const pc=((Math.round(midi)%12)+12)%12;
         const dev=midi-Math.round(midi);
-        const cw=Math.cos(Math.PI*dev);
-        if(cw<=0) continue;
+        const cw=Math.cos(Math.PI*dev); if(cw<=0) continue;
         fc[pc]+=m*cw*cw/(h*h);
       }
     }
-
-    /* Bass boost: for peaks ≤500 Hz add an extra h=1 direct contribution.
-       The bass root note is the strongest key indicator; this counteracts
-       upper-voice melody notes that would otherwise overpower it. */
     for(let k=kLo;k<=kBass;k++){
       if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue;
-      const m=mag[k]/mxf;
-      if(m<0.01) continue;
+      const m=mag[k]/mxf; if(m<0.01) continue;
       const f=k*sr/CHROMA_N;
       const midi=69+12*Math.log2(f/440);
       const pc=((Math.round(midi)%12)+12)%12;
       const dev=midi-Math.round(midi);
-      const cw=Math.cos(Math.PI*dev);
-      if(cw<=0) continue;
-      fc[pc]+=m*cw*cw; /* extra h=1 weight for bass register */
+      const cw=Math.cos(Math.PI*dev); if(cw<=0) continue;
+      fc[pc]+=m*cw*cw;
     }
-
-    /* Normalise frame chroma, then accumulate weighted by frame RMS */
     const ft=fc.reduce((a,b)=>a+b,0);
     if(ft>1e-6){
       const norm=fc.map(v=>v/ft);
-
-      /* ── Chroma concentration weight ─────────────────────────────────
-         Tonal frames (chord/melody) concentrate energy in a few bins →
-         high peakedness. Metronome/noise frames spread energy flat across
-         all 12 bins → peakedness ≈ 1. Weight by (peak/mean − 1) so truly
-         flat frames contribute nearly nothing. */
       const mn=norm.reduce((a,b)=>a+b,0)/12;
       const pk=Math.max(...norm);
       const concentration=Math.max(0,pk/Math.max(mn,1e-9)-1);
-
-      /* ── Transient onset suppression ─────────────────────────────────
-         A sudden energy spike vs the previous frame signals a percussive
-         onset (metronome click, drum hit). Down-weight by 60% when the
-         current frame's RMS is more than 3× the previous frame's. */
       const transientPenalty=prevRms>1e-6&&rms/prevRms>3?0.4:1.0;
-
       const w=rms*concentration*transientPenalty;
-      for(let i=0;i<12;i++) chroma[i]+=norm[i]*w;
-      totalWeight+=w;
+      for(let i=0;i<12;i++) acc[i]+=norm[i]*w;
+      accW.v+=w;
     }
     prevRms=rms;
+  };
 
+  /* ── Sequential 60-second block analysis ────────────────────────────
+     Process the song in non-overlapping 60s blocks starting from 5%.
+     Return the first key that appears in two consecutive blocks — this
+     handles both long intros (only 1st block affected) and mid-song key
+     changes (initial key wins 2+ blocks before the modulation).
+     Fall back to a global accumulation if no consecutive match. */
+  const BLOCK_FRAMES=Math.ceil(60*sr/CHROMA_N); /* ~322 frames @ 44100 */
+  const analysisStart=Math.floor(maxSamples*0.05);
+
+  let blockChroma=new Array(12).fill(0),blockW={v:0},blockF=0;
+  const globalChroma=new Array(12).fill(0);let globalW={v:0};
+  let prevBlockKey='';
+  let frameCount=0;
+
+  for(let pos=analysisStart;pos+CHROMA_N<=maxSamples;pos+=hop){
+    processFrame(pos,blockChroma,blockW);
+    processFrame(pos,globalChroma,globalW); // dual-accumulate for fallback
+    blockF++;
     frameCount++;
     if(frameCount%32===0) await new Promise(r=>setTimeout(r,0));
+
+    if(blockF>=BLOCK_FRAMES){
+      if(blockW.v>1e-6){
+        const bc=blockChroma.map(v=>v/blockW.v);
+        const{root,mode}=scoreChroma(bc);
+        const key=`${root}-${mode}`;
+        if(key===prevBlockKey) return{root,mode}; /* consecutive match */
+        prevBlockKey=key;
+      }
+      blockChroma=new Array(12).fill(0);blockW={v:0};blockF=0;
+    }
   }
 
-  if(totalWeight<1e-6) return null;
-  for(let i=0;i<12;i++) chroma[i]/=totalWeight;
-
-  /* Circular Gaussian smoothing — reduces FFT bin-boundary quantisation noise */
-  const sc=new Array(12).fill(0);
-  for(let i=0;i<12;i++) sc[i]=0.2*chroma[(i+11)%12]+0.6*chroma[i]+0.2*chroma[(i+1)%12];
-
-  /* Ensemble: average Krumhansl-Schmuckler + Temperley correlations.
-     KS alone is known to confuse relative major/minor pairs (e.g. Am vs C);
-     Temperley profiles weight the tonic more distinctly, reducing that error. */
-  let bestR=-Infinity,bestRoot=0,bestMode:'major'|'minor'='major';
-  for(let root=0;root<12;root++){
-    const ksM=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
-    const ksm=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
-    const tpM=Array.from({length:12},(_,i)=>TEMP_MAJOR[(i-root+12)%12]);
-    const tpm=Array.from({length:12},(_,i)=>TEMP_MINOR[(i-root+12)%12]);
-    const rMaj=(_pearson(sc,ksM)+_pearson(sc,tpM))/2;
-    const rMin=(_pearson(sc,ksm)+_pearson(sc,tpm))/2;
-    if(rMaj>bestR){bestR=rMaj;bestRoot=root;bestMode='major';}
-    if(rMin>bestR){bestR=rMin;bestRoot=root;bestMode='minor';}
-  }
-  return{root:bestRoot,mode:bestMode};
+  /* Fallback: score the accumulated global chroma */
+  if(globalW.v<1e-6) return null;
+  const gc=globalChroma.map(v=>v/globalW.v);
+  return scoreChroma(gc);
 }
 
 const keyLabel=(song:{detectedRoot:number|null,detectedMode:'major'|'minor'|null,pitch:number}):string|null=>{
