@@ -366,15 +366,31 @@ function _pearson(x:number[],y:number[]){
 
 const NOTE_NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 
+const DETECT_SR=44100; /* fixed analysis rate — FFT bin→pitch mapping must be consistent */
+
 async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'major'|'minor'}|null>{
   if(audioBuffer.duration<1) return null;
 
-  const sr=audioBuffer.sampleRate;
-  const maxSamples=audioBuffer.length;
+  /* Resample to DETECT_SR so pitch-bin mapping is always identical regardless
+     of the AudioContext sample rate (44100 vs 48000 gives wildly different
+     chroma values for enharmonically close keys like D# vs A#). */
+  let buf=audioBuffer;
+  if(audioBuffer.sampleRate!==DETECT_SR){
+    const len=Math.ceil(audioBuffer.duration*DETECT_SR);
+    const off=new OfflineAudioContext(1,len,DETECT_SR);
+    const src=off.createBufferSource();
+    src.buffer=audioBuffer;
+    src.connect(off.destination);
+    src.start(0);
+    buf=await off.startRendering();
+  }
+
+  const sr=buf.sampleRate;
+  const maxSamples=buf.length;
   const mono=new Float32Array(maxSamples);
-  const nc=audioBuffer.numberOfChannels;
+  const nc=buf.numberOfChannels;
   for(let c=0;c<nc;c++){
-    const ch=audioBuffer.getChannelData(c);
+    const ch=buf.getChannelData(c);
     for(let i=0;i<maxSamples;i++) mono[i]+=ch[i]/nc;
   }
 
