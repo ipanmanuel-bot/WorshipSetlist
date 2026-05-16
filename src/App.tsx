@@ -307,11 +307,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .yt-input{flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:8px 12px;font-size:13px;color:var(--text);font-family:'DM Sans',sans-serif;outline:none;transition:border-color .15s;min-width:0;}
 .yt-input::placeholder{color:var(--text3);}
 .yt-input:focus{border-color:var(--amber);}
-.yt-go-btn{background:#cc2a2a;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap;min-height:38px;-webkit-tap-highlight-color:transparent;transition:background .15s;}
+.yt-go-btn{background:#cc2a2a;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap;min-height:38px;min-width:52px;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;transition:background .15s;}
 .yt-go-btn:hover:not(:disabled){background:#e03333;}
 .yt-go-btn:active:not(:disabled){transform:scale(.96);}
 .yt-go-btn:disabled{opacity:.4;cursor:not-allowed;}
-.yt-hint{flex-shrink:0;padding:8px 14px;background:var(--bg3);border-bottom:1px solid var(--border);font-size:11px;color:var(--text2);display:flex;align-items:center;gap:8px;line-height:1.4;}
+.yt-hint{flex-shrink:0;padding:7px 14px;background:var(--bg3);border-bottom:1px solid var(--border);font-size:11px;color:var(--text2);display:flex;align-items:center;gap:8px;line-height:1.4;}
+.yt-hint-err{color:var(--red);background:var(--bg);}
+@keyframes yt-spin{to{transform:rotate(360deg)}}
+.yt-spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:yt-spin .7s linear infinite;}
 `;
 
 const fmt=s=>!s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
@@ -679,7 +682,8 @@ export default function WorshipSetlist() {
   const [installLang, setInstallLang] = useState<'en'|'id'>('en');
   const [showYtInput, setShowYtInput] = useState(false);
   const [ytUrl,       setYtUrl]       = useState('');
-  const [ytHint,      setYtHint]      = useState(false);
+  const [ytLoading,   setYtLoading]   = useState(false);
+  const [ytError,     setYtError]     = useState('');
 
   const fileInputRef    = useRef(null);
   const actxRef         = useRef(null);
@@ -1291,25 +1295,71 @@ export default function WorshipSetlist() {
   };
   loadFilesRef.current=loadFiles;
 
-  const openYtMate=()=>{
-    const url=ytUrl.trim();
-    let videoId:string|null=null;
-    if(url.includes('watch?v=')){
-      const m=/v=([a-zA-Z0-9\-_]{11})/.exec(url);
-      if(m) videoId=m[1];
-    } else if(url.includes('/shorts/')){
-      const m=/\/shorts\/([a-zA-Z0-9\-_]{11})/.exec(url);
-      if(m) videoId=m[1];
-    } else if(url.includes('youtu.be/')){
-      const m=/youtu\.be\/([a-zA-Z0-9\-_]{11})/.exec(url);
-      if(m) videoId=m[1];
+  const COBALT_INSTANCES=[
+    'https://cobalt-api.ayo.tf',
+    'https://cobaltapi.clebootin.com',
+    'https://cblt.fariz.dev',
+    'https://cobalt.misike.eu',
+  ];
+  const extractVideoId=(url:string):string|null=>{
+    const u=url.trim();
+    let m=(/[?&]v=([a-zA-Z0-9\-_]{11})/.exec(u));
+    if(m) return m[1];
+    m=/\/shorts\/([a-zA-Z0-9\-_]{11})/.exec(u);
+    if(m) return m[1];
+    m=/youtu\.be\/([a-zA-Z0-9\-_]{11})/.exec(u);
+    if(m) return m[1];
+    return null;
+  };
+  const addFromYoutube=async()=>{
+    const videoId=extractVideoId(ytUrl);
+    if(!videoId){setYtError('Paste a valid YouTube URL');return;}
+    setYtLoading(true);setYtError('');
+    try{
+      /* 1. Grab video title via YouTube oEmbed (free, CORS-open) */
+      let title='YouTube Song';
+      try{
+        const oe=await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+        if(oe.ok){const d=await oe.json();if(d.title) title=d.title;}
+      }catch{}
+      /* 2. Get audio stream URL from cobalt (try each instance) */
+      let audioUrl:string|null=null;
+      for(const inst of COBALT_INSTANCES){
+        try{
+          const r=await fetch(`${inst}/`,{
+            method:'POST',
+            headers:{'Accept':'application/json','Content-Type':'application/json'},
+            body:JSON.stringify({url:`https://www.youtube.com/watch?v=${videoId}`,downloadMode:'audio',audioFormat:'mp3',audioBitrate:'128'}),
+            signal:AbortSignal.timeout(8000),
+          });
+          if(!r.ok) continue;
+          const d=await r.json();
+          if((d.status==='tunnel'||d.status==='redirect')&&d.url){audioUrl=d.url;break;}
+        }catch{continue;}
+      }
+      if(!audioUrl) throw new Error('All download sources failed — try again later');
+      /* 3. Fetch audio bytes */
+      const audioRes=await fetch(audioUrl);
+      if(!audioRes.ok) throw new Error('Failed to download audio');
+      const arrayBuffer=await audioRes.arrayBuffer();
+      /* 4. Decode and add to setlist */
+      const ctx=getCtx();
+      const audioBuffer=await ctx.decodeAudioData(arrayBuffer.slice(0));
+      const id=Math.random().toString(36).slice(2,9);
+      const song={id,name:title,audioBuffer,pitch:0,tempo:100,detectedRoot:null,detectedMode:null};
+      setSongs(prev=>{
+        const next=[...prev,song];
+        dbPut({id,name:title,arrayBuffer:audioBufferToArrayBuffer(audioBuffer),pitch:0,tempo:100,detectedRoot:null,detectedMode:null}).catch(()=>{});
+        saveOrder(next);
+        return next;
+      });
+      runKeyDetect(id,audioBuffer);
+      setYtUrl('');setShowYtInput(false);
+    }catch(err:any){
+      setYtError(err.message||'Something went wrong');
+    }finally{
+      setYtLoading(false);
     }
-    if(!videoId) return;
-    window.open('https://y2mate.nu/#'+videoId,'_blank');
-    setYtUrl('');
-    setShowYtInput(false);
-    setYtHint(true);
-    setTimeout(()=>setYtHint(false),10000);
   };
 
   const removeSong=(id,e)=>{
@@ -1422,7 +1472,7 @@ export default function WorshipSetlist() {
                 <span className="song-count">{songs.length}</span>
               </div>
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                <button className="yt-btn" title="Add from YouTube" onClick={()=>{setShowYtInput(v=>!v);setYtUrl('');setYtHint(false);}}>
+                <button className="yt-btn" title="Add from YouTube" onClick={()=>{setShowYtInput(v=>!v);setYtUrl('');setYtError('');}}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2C0 8.1 0 12 0 12s0 3.9.5 5.8a3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1C24 15.9 24 12 24 12s0-3.9-.5-5.8zM9.8 15.5V8.5l6.2 3.5-6.2 3.5z"/></svg>
                   <span className="yt-btn-label">YouTube</span>
                 </button>
@@ -1438,17 +1488,16 @@ export default function WorshipSetlist() {
               <div className="yt-input-row">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="#cc2a2a" style={{flexShrink:0}}><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2C0 8.1 0 12 0 12s0 3.9.5 5.8a3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1C24 15.9 24 12 24 12s0-3.9-.5-5.8zM9.8 15.5V8.5l6.2 3.5-6.2 3.5z"/></svg>
                 <input className="yt-input" type="url" placeholder="Paste YouTube URL…"
-                  value={ytUrl} autoFocus
-                  onChange={e=>setYtUrl(e.target.value)}
-                  onKeyDown={e=>e.key==='Enter'&&openYtMate()}/>
-                <button className="yt-go-btn" disabled={!ytUrl.trim()} onClick={openYtMate}>Open ↗</button>
+                  value={ytUrl} autoFocus disabled={ytLoading}
+                  onChange={e=>{setYtUrl(e.target.value);setYtError('');}}
+                  onKeyDown={e=>e.key==='Enter'&&addFromYoutube()}/>
+                <button className="yt-go-btn" disabled={!ytUrl.trim()||ytLoading} onClick={addFromYoutube}>
+                  {ytLoading?<span className="yt-spinner"/>:'Add'}
+                </button>
               </div>
             )}
-            {ytHint&&(
-              <div className="yt-hint">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="var(--amber2)" style={{flexShrink:0}}><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-                Download the MP3 from the y2mate tab, then drag it here or tap + Add Songs
-              </div>
+            {ytError&&showYtInput&&(
+              <div className="yt-hint yt-hint-err">{ytError}</div>
             )}
 
             <div className="songs-scroll"
