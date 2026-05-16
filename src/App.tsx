@@ -297,6 +297,21 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .pwa-sheet-header h2{margin:0;flex:1;}
 .pwa-close{width:100%;padding:13px;border-radius:10px;background:var(--bg3);border:1px solid var(--border2);color:var(--text2);font-size:14px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;}
 .pwa-close:hover{background:var(--bg4);}
+/* YouTube input */
+.yt-btn{background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:8px 11px;font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s;min-height:40px;display:flex;align-items:center;gap:5px;-webkit-tap-highlight-color:transparent;flex-shrink:0;}
+.yt-btn:hover{border-color:#e05555;color:#e05555;}
+.yt-btn:active{transform:scale(.96);}
+.yt-btn-label{display:inline;}
+@media(max-width:660px){.yt-btn-label{display:none;}}
+.yt-input-row{flex-shrink:0;display:flex;gap:8px;padding:9px 14px;border-bottom:1px solid var(--border);background:var(--bg);align-items:center;}
+.yt-input{flex:1;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:8px 12px;font-size:13px;color:var(--text);font-family:'DM Sans',sans-serif;outline:none;transition:border-color .15s;min-width:0;}
+.yt-input::placeholder{color:var(--text3);}
+.yt-input:focus{border-color:var(--amber);}
+.yt-go-btn{background:#cc2a2a;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap;min-height:38px;-webkit-tap-highlight-color:transparent;transition:background .15s;}
+.yt-go-btn:hover:not(:disabled){background:#e03333;}
+.yt-go-btn:active:not(:disabled){transform:scale(.96);}
+.yt-go-btn:disabled{opacity:.4;cursor:not-allowed;}
+.yt-hint{flex-shrink:0;padding:8px 14px;background:var(--bg3);border-bottom:1px solid var(--border);font-size:11px;color:var(--text2);display:flex;align-items:center;gap:8px;line-height:1.4;}
 `;
 
 const fmt=s=>!s||isNaN(s)?"0:00":`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,"0")}`;
@@ -662,6 +677,9 @@ export default function WorshipSetlist() {
   const [canInstall,  setCanInstall]  = useState(()=>!isStandalone()&&(!!_installPrompt||isIOS()));
   const [showInstall, setShowInstall] = useState(false);
   const [installLang, setInstallLang] = useState<'en'|'id'>('en');
+  const [showYtInput, setShowYtInput] = useState(false);
+  const [ytUrl,       setYtUrl]       = useState('');
+  const [ytHint,      setYtHint]      = useState(false);
 
   const fileInputRef    = useRef(null);
   const actxRef         = useRef(null);
@@ -1273,6 +1291,27 @@ export default function WorshipSetlist() {
   };
   loadFilesRef.current=loadFiles;
 
+  const openYtMate=()=>{
+    const url=ytUrl.trim();
+    let videoId:string|null=null;
+    if(url.includes('watch?v=')){
+      const m=/v=([a-zA-Z0-9\-_]{11})/.exec(url);
+      if(m) videoId=m[1];
+    } else if(url.includes('/shorts/')){
+      const m=/\/shorts\/([a-zA-Z0-9\-_]{11})/.exec(url);
+      if(m) videoId=m[1];
+    } else if(url.includes('youtu.be/')){
+      const m=/youtu\.be\/([a-zA-Z0-9\-_]{11})/.exec(url);
+      if(m) videoId=m[1];
+    }
+    if(!videoId) return;
+    window.open('https://y2mate.nu/#'+videoId,'_blank');
+    setYtUrl('');
+    setShowYtInput(false);
+    setYtHint(true);
+    setTimeout(()=>setYtHint(false),10000);
+  };
+
   const removeSong=(id,e)=>{
     e.stopPropagation();
     dbDelete(id).catch(()=>{});
@@ -1382,12 +1421,35 @@ export default function WorshipSetlist() {
                 <span className="panel-label">Setlist</span>
                 <span className="song-count">{songs.length}</span>
               </div>
-              <button className="add-btn" onClick={()=>fileInputRef.current?.click()}>+ Add Songs</button>
-              <input ref={fileInputRef} type="file"
-                accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.mp4,.caf"
-                multiple style={{display:"none"}}
-                onChange={e=>{loadFiles(e.target.files);e.target.value="";}}/>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <button className="yt-btn" title="Add from YouTube" onClick={()=>{setShowYtInput(v=>!v);setYtUrl('');setYtHint(false);}}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2C0 8.1 0 12 0 12s0 3.9.5 5.8a3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1C24 15.9 24 12 24 12s0-3.9-.5-5.8zM9.8 15.5V8.5l6.2 3.5-6.2 3.5z"/></svg>
+                  <span className="yt-btn-label">YouTube</span>
+                </button>
+                <button className="add-btn" onClick={()=>fileInputRef.current?.click()}>+ Add Songs</button>
+                <input ref={fileInputRef} type="file"
+                  accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.mp4,.caf"
+                  multiple style={{display:"none"}}
+                  onChange={e=>{loadFiles(e.target.files);e.target.value="";}}/>
+              </div>
             </div>
+
+            {showYtInput&&(
+              <div className="yt-input-row">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="#cc2a2a" style={{flexShrink:0}}><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2C0 8.1 0 12 0 12s0 3.9.5 5.8a3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1C24 15.9 24 12 24 12s0-3.9-.5-5.8zM9.8 15.5V8.5l6.2 3.5-6.2 3.5z"/></svg>
+                <input className="yt-input" type="url" placeholder="Paste YouTube URL…"
+                  value={ytUrl} autoFocus
+                  onChange={e=>setYtUrl(e.target.value)}
+                  onKeyDown={e=>e.key==='Enter'&&openYtMate()}/>
+                <button className="yt-go-btn" disabled={!ytUrl.trim()} onClick={openYtMate}>Open ↗</button>
+              </div>
+            )}
+            {ytHint&&(
+              <div className="yt-hint">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="var(--amber2)" style={{flexShrink:0}}><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                Download the MP3 from the y2mate tab, then drag it here or tap + Add Songs
+              </div>
+            )}
 
             <div className="songs-scroll"
               onDragOver={e=>{e.preventDefault();setDragOver(true);}}
