@@ -1316,14 +1316,14 @@ export default function WorshipSetlist() {
     if(!videoId){setYtError('Paste a valid YouTube URL');return;}
     setYtLoading(true);setYtError('');
     try{
-      /* 1. Grab video title via YouTube oEmbed (free, CORS-open) */
+      /* 1. Video title from oEmbed */
       let title='YouTube Song';
       try{
         const oe=await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
         if(oe.ok){const d=await oe.json();if(d.title) title=d.title;}
       }catch{}
-      /* 2. Get audio stream URL from cobalt (try each instance) */
-      let audioUrl:string|null=null;
+      /* 2. Try cobalt community instances */
+      let audioBuffer:AudioBuffer|null=null;
       for(const inst of COBALT_INSTANCES){
         try{
           const r=await fetch(`${inst}/`,{
@@ -1334,27 +1334,34 @@ export default function WorshipSetlist() {
           });
           if(!r.ok) continue;
           const d=await r.json();
-          if((d.status==='tunnel'||d.status==='redirect')&&d.url){audioUrl=d.url;break;}
+          if((d.status!=='tunnel'&&d.status!=='redirect')||!d.url) continue;
+          const audioRes=await fetch(d.url,{signal:AbortSignal.timeout(30000)});
+          if(!audioRes.ok) continue;
+          const ct=audioRes.headers.get('content-type')||'';
+          if(!ct.includes('audio')&&!ct.includes('octet-stream')) continue;
+          const ab=await audioRes.arrayBuffer();
+          const ctx=getCtx();
+          audioBuffer=await ctx.decodeAudioData(ab);
+          break;
         }catch{continue;}
       }
-      if(!audioUrl) throw new Error('All download sources failed — try again later');
-      /* 3. Fetch audio bytes */
-      const audioRes=await fetch(audioUrl);
-      if(!audioRes.ok) throw new Error('Failed to download audio');
-      const arrayBuffer=await audioRes.arrayBuffer();
-      /* 4. Decode and add to setlist */
-      const ctx=getCtx();
-      const audioBuffer=await ctx.decodeAudioData(arrayBuffer.slice(0));
-      const id=Math.random().toString(36).slice(2,9);
-      const song={id,name:title,audioBuffer,pitch:0,tempo:100,detectedRoot:null,detectedMode:null};
-      setSongs(prev=>{
-        const next=[...prev,song];
-        dbPut({id,name:title,arrayBuffer:audioBufferToArrayBuffer(audioBuffer),pitch:0,tempo:100,detectedRoot:null,detectedMode:null}).catch(()=>{});
-        saveOrder(next);
-        return next;
-      });
-      runKeyDetect(id,audioBuffer);
-      setYtUrl('');setShowYtInput(false);
+      /* 3. Seamless path — cobalt worked */
+      if(audioBuffer){
+        const id=Math.random().toString(36).slice(2,9);
+        const song={id,name:title,audioBuffer,pitch:0,tempo:100,detectedRoot:null,detectedMode:null};
+        setSongs(prev=>{
+          const next=[...prev,song];
+          dbPut({id,name:title,arrayBuffer:audioBufferToArrayBuffer(audioBuffer!),pitch:0,tempo:100,detectedRoot:null,detectedMode:null}).catch(()=>{});
+          saveOrder(next);
+          return next;
+        });
+        runKeyDetect(id,audioBuffer);
+        setYtUrl('');setShowYtInput(false);
+        return;
+      }
+      /* 4. Fallback — open y2mate so user can download the MP3 manually */
+      window.open('https://y2mate.nu/#'+videoId,'_blank');
+      setYtError('Auto-download unavailable — download the MP3 from y2mate, then drag it here');
     }catch(err:any){
       setYtError(err.message||'Something went wrong');
     }finally{
