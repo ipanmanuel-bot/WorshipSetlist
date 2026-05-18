@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "api/youtube.js": {
+      "maxDuration": 60
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",
