@@ -39,7 +39,7 @@ export default async function handler(req, res) {
 
     if (tokensJson) {
       /* ── OAuth (preferred) ── */
-      const tokens = JSON.parse(tokensJson);
+      const tokens = JSON.parse(tokensJson.slice(tokensJson.indexOf('{')));
       yt = await Innertube.create({ cache: new UniversalCache(false) });
       await yt.session.signIn(tokens); // auto-refreshes access_token if expired
     } else {

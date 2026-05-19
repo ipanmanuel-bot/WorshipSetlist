@@ -18,12 +18,14 @@ yt.session.on('auth-pending', (data) => {
 });
 
 yt.session.on('auth', ({ credentials }) => {
-  console.log('✓ Authenticated!\n');
-  console.log('━━━ Copy this into Vercel → Settings → Environment Variables ━━━');
-  console.log(`\nName:  YOUTUBE_TOKENS`);
-  console.log(`Value: ${JSON.stringify(credentials)}`);
-  console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('\nAfter saving, redeploy your Vercel project. Done!\n');
+  const json = JSON.stringify(credentials);
+  console.log('\n✓ Authenticated!\n');
+  console.log('Go to: Vercel → your project → Settings → Environment Variables');
+  console.log('Add a new variable:');
+  console.log('  Name:  YOUTUBE_TOKENS');
+  console.log('  Value: (copy the line below, starting with {)\n');
+  console.log(json);
+  console.log('\nThen redeploy. Done!\n');
   process.exit(0);
 });
 
