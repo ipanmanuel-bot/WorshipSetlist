@@ -1,13 +1,11 @@
 import { Innertube, UniversalCache } from 'youtubei.js';
-import { BG } from 'bgutils-js';
-import { JSDOM } from 'jsdom';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
 };
 
-async function streamBuffer(stream) {
+async function streamToBuffer(stream) {
   const chunks = [];
   const reader = stream.getReader();
   for (;;) {
@@ -16,66 +14,6 @@ async function streamBuffer(stream) {
     chunks.push(Buffer.from(value));
   }
   return Buffer.concat(chunks);
-}
-
-/* ── Cookie-based auth (most reliable) ── */
-async function withCookie(videoId) {
-  const yt = await Innertube.create({
-    cookie: process.env.YOUTUBE_COOKIES,
-    cache:  new UniversalCache(false),
-  });
-  const info   = await yt.getBasicInfo(videoId);
-  const title  = info.basic_info?.title || 'YouTube Song';
-  const stream = await yt.download(videoId, { type: 'audio', quality: 'best', format: 'any' });
-  return { title, buffer: await streamBuffer(stream) };
-}
-
-/* ── po_token auth (fallback) ── */
-async function withPoToken(videoId) {
-  const yt0         = await Innertube.create({ retrieve_player: false });
-  const visitorData = yt0.session.context.client.visitorData;
-  if (!visitorData) throw new Error('Could not obtain visitor data');
-
-  const dom = new JSDOM('<!DOCTYPE html>', {
-    url:        'https://www.youtube.com/',
-    runScripts: 'dangerously',
-  });
-
-  const bgConfig = {
-    fetch:      (input, init) => fetch(input, init),
-    globalObj:  dom.window,
-    identifier: visitorData,
-    requestKey: 'O43z0dpjhgX20SCx4KAo',
-  };
-
-  const challenge = await BG.Challenge.create(bgConfig);
-  if (!challenge) throw new Error('BotGuard challenge failed');
-
-  const interpreterJs =
-    challenge.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue;
-  if (!interpreterJs) throw new Error('No BotGuard interpreter script');
-
-  const script = dom.window.document.createElement('script');
-  script.textContent = interpreterJs;
-  dom.window.document.head.appendChild(script);
-
-  const { poToken } = await BG.PoToken.generate({
-    program:    challenge.program,
-    globalName: challenge.globalName,
-    bgConfig,
-  });
-  if (!poToken) throw new Error('po_token generation returned empty');
-
-  const yt = await Innertube.create({
-    visitor_data: visitorData,
-    po_token:     poToken,
-    cache:        new UniversalCache(false),
-  });
-
-  const info   = await yt.getBasicInfo(videoId);
-  const title  = info.basic_info?.title || 'YouTube Song';
-  const stream = await yt.download(videoId, { type: 'audio', quality: 'best', format: 'any' });
-  return { title, buffer: await streamBuffer(stream) };
 }
 
 export default async function handler(req, res) {
@@ -87,10 +25,40 @@ export default async function handler(req, res) {
     return res.status(400).send('Invalid video ID');
   }
 
+  const tokensJson = process.env.YOUTUBE_TOKENS;
+  const cookieStr  = process.env.YOUTUBE_COOKIES;
+
+  if (!tokensJson && !cookieStr) {
+    return res.status(503).send(
+      'YouTube auth not configured. Run: node scripts/youtube-auth.mjs'
+    );
+  }
+
   try {
-    const { title, buffer } = process.env.YOUTUBE_COOKIES
-      ? await withCookie(videoId)
-      : await withPoToken(videoId);
+    let yt;
+
+    if (tokensJson) {
+      /* ── OAuth (preferred) ── */
+      const tokens = JSON.parse(tokensJson);
+      yt = await Innertube.create({ cache: new UniversalCache(false) });
+      await yt.session.signIn(tokens); // auto-refreshes access_token if expired
+    } else {
+      /* ── Cookie fallback ── */
+      yt = await Innertube.create({
+        cookie: cookieStr,
+        cache:  new UniversalCache(false),
+      });
+    }
+
+    const info   = await yt.getBasicInfo(videoId);
+    const title  = info.basic_info?.title || 'YouTube Song';
+    const stream = await yt.download(videoId, {
+      type:    'audio',
+      quality: 'best',
+      format:  'any',
+    });
+
+    const buffer = await streamToBuffer(stream);
 
     res.setHeader('Content-Type', 'audio/mp4');
     res.setHeader('Content-Length', buffer.length);
