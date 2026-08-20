@@ -257,7 +257,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .t-btn:hover:not(:disabled){border-color:var(--amber);color:var(--amber);}
 .t-btn.play-btn{min-width:58px;min-height:58px;background:var(--amber);border-color:var(--amber);color:#fff;}
 .t-btn.play-btn:hover:not(:disabled){background:var(--amber2);border-color:var(--amber2);}
+.t-btn.seek-btn{min-width:40px;min-height:40px;color:var(--text2);}
 .t-btn:disabled{opacity:.2;cursor:not-allowed;}
+@media(max-width:660px){.transport{gap:6px;}}
 .theme-btn{background:none;border:1px solid var(--border2);color:var(--text2);border-radius:8px;padding:6px 10px;font-size:11px;cursor:pointer;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:5px;transition:all .15s;-webkit-tap-highlight-color:transparent;white-space:nowrap;margin-left:auto;}
 .theme-btn:hover{border-color:var(--amber);color:var(--amber);}
 .theme-dropdown{position:absolute;top:58px;right:12px;z-index:100;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4);min-width:160px;}
@@ -418,9 +420,11 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
 
   /* Helper: score a chroma vector → {root, mode} */
   const scoreChroma=(ch:number[])=>{
+    /* Very light smoothing — old 0.2/0.6/0.2 blur mixed A into A#, which is
+       the only note distinguishing E major from B major. See key-worker.js. */
     const sc=new Array(12).fill(0);
-    for(let i=0;i<12;i++) sc[i]=0.2*ch[(i+11)%12]+0.6*ch[i]+0.2*ch[(i+1)%12];
-    let bR=-Infinity,bRoot=0,bMode:'major'|'minor'='major';
+    for(let i=0;i<12;i++) sc[i]=0.08*ch[(i+11)%12]+0.84*ch[i]+0.08*ch[(i+1)%12];
+    const scores:{root:number,mode:'major'|'minor',score:number}[]=[];
     for(let root=0;root<12;root++){
       const ksM=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
       const ksm=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
@@ -428,10 +432,24 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
       const tpm=Array.from({length:12},(_,i)=>TEMP_MINOR[(i-root+12)%12]);
       const rMaj=(_pearson(sc,ksM)+_pearson(sc,tpM))/2;
       const rMin=(_pearson(sc,ksm)+_pearson(sc,tpm))/2;
-      if(rMaj>bR){bR=rMaj;bRoot=root;bMode='major';}
-      if(rMin>bR){bR=rMin;bRoot=root;bMode='minor';}
+      scores.push({root,mode:'major',score:rMaj});
+      scores.push({root,mode:'minor',score:rMin});
     }
-    return{root:bRoot,mode:bMode};
+    scores.sort((a,b)=>b.score-a.score);
+    let best=scores[0];
+    /* Fifth-error correction: detectors commonly pick the dominant (V) instead
+       of the tonic (I) because every root's 3rd harmonic is a perfect fifth up
+       and V chords are used heavily. If a same-mode candidate a perfect fifth
+       BELOW the winner scores within FIFTH_TOL, prefer it — that's the tonic.
+       Also handles E/B: those keys differ by only one scale note (A vs A#),
+       so their raw scores land very close and small biases flip the winner. */
+    const FIFTH_TOL=0.08;
+    for(let i=1;i<scores.length;i++){
+      const c=scores[i];
+      if(c.mode!==best.mode) continue;
+      if(((best.root-c.root+12)%12)===7&&(best.score-c.score)<FIFTH_TOL){ best=c; break; }
+    }
+    return{root:best.root,mode:best.mode};
   };
 
   /* Process one HPCP frame — single FFT, accumulates into up to two arrays. */
@@ -461,6 +479,8 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
         fc[pc]+=m*cw*cw/(h*h);
       }
     }
+    /* Bass gets 3× weight — bass instrument plays tonic roots most often, so
+       amplifying it makes the tonic win over dominant/subdominant. */
     for(let k=kLo;k<=kBass;k++){
       if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue;
       const m=mag[k]/mxf; if(m<0.01) continue;
@@ -469,7 +489,7 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
       const pc=((Math.round(midi)%12)+12)%12;
       const dev=midi-Math.round(midi);
       const cw=Math.cos(Math.PI*dev); if(cw<=0) continue;
-      fc[pc]+=m*cw*cw;
+      fc[pc]+=3*m*cw*cw;
     }
     const ft=fc.reduce((a,b)=>a+b,0);
     if(ft>1e-6){
@@ -622,6 +642,20 @@ const IconNext=()=><svg width="16" height="16" viewBox="0 0 24 24" fill="current
 const IconPlay=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
 const IconPause=()=><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>;
 const IconPlaySm=()=><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>;
+const IconRewind10=()=>(
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+    <path d="M3 3v5h5"/>
+    <text x="13" y="16" fontSize="7" fontWeight="700" fill="currentColor" stroke="none" textAnchor="middle" fontFamily="'DM Mono', monospace">10</text>
+  </svg>
+);
+const IconFFwd10=()=>(
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+    <path d="M21 3v5h-5"/>
+    <text x="11" y="16" fontSize="7" fontWeight="700" fill="currentColor" stroke="none" textAnchor="middle" fontFamily="'DM Mono', monospace">10</text>
+  </svg>
+);
 
 /* Scrolls overflowing text after a pause so the full title is readable */
 function MarqueeText({text,className}:{text:string,className?:string}){
@@ -775,12 +809,31 @@ export default function WorshipSetlist() {
     navigator.mediaSession.setActionHandler('previoustrack', ()=>{
       const cur = playingIdxRef.current;
       if(cur===null) return;
+      const ctx=actxRef.current;
+      const dur=durationRef.current;
+      const elapsed=isPlayingRef.current&&ctx?Math.min(ctx.currentTime-startTimeRef.current,dur):pausedAtRef.current;
+      if(elapsed>5){ pausedAtRef.current=0; playFrom(cur,0); return; }
       const p = cur-1;
       if(p >= 0) { setActiveIdx(p); setPlayingIdx(p); pausedAtRef.current=0; playFrom(p,0); }
-      else { pausedAtRef.current=0; playFrom(cur,0); }
     });
+    const seek=(dir:number)=>(details?:MediaSessionActionDetails)=>{
+      const off=(details as any)?.seekOffset||10;
+      const idx=playingIdxRef.current??activeIdxRef.current;
+      if(idx===null) return;
+      const song=songsRef.current[idx];
+      if(!song) return;
+      const dur=durationRef.current||(song.audioBuffer.duration/(song.tempo/100));
+      if(dur<=0) return;
+      const ctx=actxRef.current;
+      const cur=isPlayingRef.current&&ctx?Math.min(ctx.currentTime-startTimeRef.current,dur):pausedAtRef.current;
+      const newPos=Math.max(0,Math.min(dur,cur+dir*off));
+      pausedAtRef.current=newPos;
+      if(isPlayingRef.current) playFrom(idx,newPos);
+    };
+    try{ navigator.mediaSession.setActionHandler('seekbackward',seek(-1)); }catch{}
+    try{ navigator.mediaSession.setActionHandler('seekforward', seek(1));  }catch{}
     return ()=>{
-      (['play','pause','nexttrack','previoustrack'] as MediaSessionAction[]).forEach(a=>{
+      (['play','pause','nexttrack','previoustrack','seekbackward','seekforward'] as MediaSessionAction[]).forEach(a=>{
         try{ navigator.mediaSession.setActionHandler(a,null); }catch{}
       });
     };
@@ -944,7 +997,15 @@ export default function WorshipSetlist() {
         if(!isPlayingRef.current||genRef.current!==gen) return;
         const next=playingIdxRef.current+1;
         if(next<songsRef.current.length){setActiveIdx(next);setPlayingIdx(next);pausedAtRef.current=0;playFrom(next,0);}
-        else{setIsPlaying(false);setPlayingIdx(null);setProgress(0);pausedAtRef.current=0;}
+        else{
+          /* End of setlist: the worklet returned false from process() and is
+             now a zombie node. Release it so the next Play creates a fresh
+             worklet instead of posting 'seek' to a dead one (no audio bug). */
+          stopSource();
+          audioOutRef.current?.pause();
+          loadedSongIdRef.current=null;
+          setIsPlaying(false);setPlayingIdx(null);setProgress(0);pausedAtRef.current=0;
+        }
       };
       const tick=()=>{
         const el=ctx.currentTime-startTimeRef.current;
@@ -967,9 +1028,7 @@ export default function WorshipSetlist() {
       if(canSeek){
         if(rafRef.current) cancelAnimationFrame(rafRef.current);
         const node=workletNodeRef.current!;
-        node.parameters.get('pitch').value=song.pitch;
-        node.parameters.get('tempo').value=tempoFactor;
-        node.port.postMessage({t:'seek',s:startSample});
+        node.port.postMessage({t:'seek',s:startSample,pitch:song.pitch,tempo:tempoFactor});
         node.port.onmessage=({data})=>{ if(data.t==='ended') advance(); };
       } else {
         /* Different song or first play: full node creation + data transfer */
@@ -981,9 +1040,10 @@ export default function WorshipSetlist() {
         const node=new AudioWorkletNode(ctx,'pv-proc',{
           numberOfOutputs:1, outputChannelCount:[numCh]
         });
-        node.parameters.get('pitch').value=song.pitch;
-        node.parameters.get('tempo').value=tempoFactor;
-        node.port.postMessage({t:'load',ch,s:startSample},ch.map(f=>f.buffer));
+        /* Pitch/tempo travel in the load message so they're applied atomically
+           with _on=true — avoids the AudioParam-vs-port race that caused the
+           new song's first blocks to play at the previous song's pitch. */
+        node.port.postMessage({t:'load',ch,s:startSample,pitch:song.pitch,tempo:tempoFactor},ch.map(f=>f.buffer));
         node.port.onmessage=({data})=>{ if(data.t==='ended') advance(); };
         if(destNodeRef.current){
           node.connect(destNodeRef.current);
@@ -1016,8 +1076,44 @@ export default function WorshipSetlist() {
     } else { playFrom(playingIdx??activeIdx??0,pausedAtRef.current); }
   };
 
-  const handlePrev=()=>{const pi=playingIdx??activeIdx;if(pi!==null){pausedAtRef.current=0;playFrom(Math.max(0,pi-1),0);}};
+  const currentElapsed=()=>{
+    const ctx=actxRef.current;
+    const dur=durationRef.current;
+    if(isPlayingRef.current&&ctx) return Math.min(ctx.currentTime-startTimeRef.current,dur);
+    return pausedAtRef.current;
+  };
+
+  const handlePrev=()=>{
+    const pi=playingIdx??activeIdx;
+    if(pi===null) return;
+    /* If the song has played past 5s, "Previous" restarts the current track
+       instead of jumping to the previous one — matches Spotify/Apple Music. */
+    if(currentElapsed()>5){pausedAtRef.current=0;playFrom(pi,0);return;}
+    if(pi>0){pausedAtRef.current=0;playFrom(pi-1,0);}
+  };
   const handleNext=()=>{const pi=playingIdx??activeIdx;if(pi!==null&&pi+1<songs.length){pausedAtRef.current=0;playFrom(pi+1,0);}};
+
+  const handleSeek=(deltaSec:number)=>{
+    const idx=playingIdxRef.current??activeIdxRef.current;
+    if(idx===null) return;
+    const song=songsRef.current[idx];
+    if(!song) return;
+    const dur=durationRef.current||(song.audioBuffer.duration/(song.tempo/100));
+    if(dur<=0) return;
+    const newPos=Math.max(0,Math.min(dur,currentElapsed()+deltaSec));
+    pausedAtRef.current=newPos;
+    if(isPlayingRef.current){
+      playFrom(idx,newPos);
+    }else{
+      /* Paused: update the visual position but don't resume playback */
+      setProgress(newPos);
+      setDuration(dur);
+      const pct=(newPos/dur)*100;
+      if(progFillRef.current) progFillRef.current.style.width=pct+'%';
+      if(progThumbRef.current) progThumbRef.current.style.left=pct+'%';
+      if(progCurTimeRef.current) progCurTimeRef.current.textContent=fmt(newPos);
+    }
+  };
 
   const handleInstall=async()=>{
     if(isIOS()){ setShowInstall(true); return; }
@@ -1146,15 +1242,14 @@ export default function WorshipSetlist() {
       }).catch(()=>{});
       return updated;
     }));
-    /* If this song is currently playing, update worklet AudioParams instantly */
+    /* If this song is currently playing, push pitch/tempo to the worklet */
     const isActive=songsRef.current[playingIdxRef.current]?.id===id;
     if(isActive&&workletNodeRef.current){
       const song=songsRef.current.find(s=>s.id===id);
       if(!song) return;
       const updated={...song,[key]:val};
-      workletNodeRef.current.parameters.get('pitch').value=updated.pitch;
       const tf=updated.tempo/100;
-      workletNodeRef.current.parameters.get('tempo').value=tf;
+      workletNodeRef.current.port.postMessage({t:'setParams',pitch:updated.pitch,tempo:tf});
       /* Recalculate output duration when tempo changes */
       const newDur=updated.audioBuffer.duration/tf;
       durationRef.current=newDur; setDuration(newDur);
@@ -1177,11 +1272,9 @@ export default function WorshipSetlist() {
       const node=new AudioWorkletNode(octx,'pv-proc',{
         numberOfOutputs:1,outputChannelCount:[nc]
       });
-      node.parameters.get('pitch').value=song.pitch;
-      node.parameters.get('tempo').value=tempoFactor;
       const ch:Float32Array[]=[];
       for(let c=0;c<nc;c++) ch.push(new Float32Array(ab.getChannelData(c)));
-      node.port.postMessage({t:'load',ch,s:0},ch.map(f=>f.buffer));
+      node.port.postMessage({t:'load',ch,s:0,pitch:song.pitch,tempo:tempoFactor},ch.map(f=>f.buffer));
       node.connect(octx.destination);
 
       const rendered=await octx.startRendering();
@@ -1570,13 +1663,15 @@ export default function WorshipSetlist() {
             </div>
 
             <div className="transport">
-              <button tabIndex={-1} className="t-btn" onClick={handlePrev} disabled={songs.length===0||(playingIdx??activeIdx??-1)<=0}><IconPrev/></button>
+              <button tabIndex={-1} className="t-btn" onClick={handlePrev} disabled={songs.length===0||(playingIdx??activeIdx)===null} title="Previous"><IconPrev/></button>
+              <button tabIndex={-1} className="t-btn seek-btn" onClick={()=>handleSeek(-10)} disabled={playingIdx===null} title="Rewind 10s"><IconRewind10/></button>
               <button tabIndex={-1} className="t-btn play-btn"
                 onClick={songs.length>0?handlePlayPause:undefined}
                 disabled={songs.length===0}>
                 {isPlaying?<IconPause/>:<IconPlay/>}
               </button>
-              <button tabIndex={-1} className="t-btn" onClick={handleNext} disabled={songs.length===0||(playingIdx??activeIdx??-1)>=songs.length-1}><IconNext/></button>
+              <button tabIndex={-1} className="t-btn seek-btn" onClick={()=>handleSeek(10)} disabled={playingIdx===null} title="Forward 10s"><IconFFwd10/></button>
+              <button tabIndex={-1} className="t-btn" onClick={handleNext} disabled={songs.length===0||(playingIdx??activeIdx??-1)>=songs.length-1} title="Next"><IconNext/></button>
             </div>
           </div>
       </div>

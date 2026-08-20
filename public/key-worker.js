@@ -52,9 +52,13 @@ function _pearson(x,y){
 }
 
 function scoreChroma(ch){
+  /* Very light smoothing (was 0.2/0.6/0.2). The old blur mixed A into A#,
+     which is the ONLY note distinguishing E major from B major — killing
+     the algorithm's ability to tell them apart. Keep just enough for tuning
+     tolerance. */
   const sc=new Array(12).fill(0);
-  for(let i=0;i<12;i++) sc[i]=0.2*ch[(i+11)%12]+0.6*ch[i]+0.2*ch[(i+1)%12];
-  let bR=-Infinity,bRoot=0,bMode='major';
+  for(let i=0;i<12;i++) sc[i]=0.08*ch[(i+11)%12]+0.84*ch[i]+0.08*ch[(i+1)%12];
+  const scores=[];
   for(let root=0;root<12;root++){
     const ksM=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
     const ksm=Array.from({length:12},(_,i)=>KS_MINOR[(i-root+12)%12]);
@@ -62,10 +66,24 @@ function scoreChroma(ch){
     const tpm=Array.from({length:12},(_,i)=>TEMP_MINOR[(i-root+12)%12]);
     const rMaj=(_pearson(sc,ksM)+_pearson(sc,tpM))/2;
     const rMin=(_pearson(sc,ksm)+_pearson(sc,tpm))/2;
-    if(rMaj>bR){bR=rMaj;bRoot=root;bMode='major';}
-    if(rMin>bR){bR=rMin;bRoot=root;bMode='minor';}
+    scores.push({root,mode:'major',score:rMaj});
+    scores.push({root,mode:'minor',score:rMin});
   }
-  return{root:bRoot,mode:bMode};
+  scores.sort((a,b)=>b.score-a.score);
+  let best=scores[0];
+  /* Fifth-error correction: detectors commonly pick the dominant (V) instead
+     of the tonic (I) because every root's 3rd harmonic is a perfect fifth up
+     and V chords are used heavily. If a same-mode candidate a perfect fifth
+     BELOW the winner scores within FIFTH_TOL, prefer it — that's the tonic.
+     Also handles E/B: those keys differ by only one scale note (A vs A#),
+     so their raw scores land very close and small biases flip the winner. */
+  const FIFTH_TOL=0.08;
+  for(let i=1;i<scores.length;i++){
+    const c=scores[i];
+    if(c.mode!==best.mode) continue;
+    if(((best.root-c.root+12)%12)===7&&(best.score-c.score)<FIFTH_TOL){ best=c; break; }
+  }
+  return{root:best.root,mode:best.mode};
 }
 
 function detectKeyFromMono(mono,sr){
@@ -118,6 +136,9 @@ function detectKeyFromMono(mono,sr){
             fc[pc]+=m*cw*cw/(h*h);
           }
         }
+        /* Bass emphasis: the bass instrument plays chord roots, so bass bins
+           are the strongest tonic signal. 3× multiplier (up from 1×) makes
+           the tonic dominate its dominant/subdominant in root-detection. */
         for(let k=kLo;k<=kBass;k++){
           if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue;
           const m=mag[k]/mxf; if(m<0.01) continue;
@@ -126,7 +147,7 @@ function detectKeyFromMono(mono,sr){
           const pc=((Math.round(midi)%12)+12)%12;
           const dev=midi-Math.round(midi);
           const cw=Math.cos(Math.PI*dev); if(cw<=0) continue;
-          fc[pc]+=m*cw*cw;
+          fc[pc]+=3*m*cw*cw;
         }
         const ft=fc.reduce((a,b)=>a+b,0);
         if(ft>1e-6){
