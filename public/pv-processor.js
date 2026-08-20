@@ -57,15 +57,6 @@ const RSIZE = 1 << RBITS;
 const RMASK = RSIZE - 1;
 
 class PVProcessor extends AudioWorkletProcessor {
-  static get parameterDescriptors() {
-    return [
-      { name: 'pitch', defaultValue: 0, minValue: -24, maxValue: 24,
-        automationRate: 'k-rate' },
-      { name: 'tempo', defaultValue: 1, minValue: 0.25, maxValue: 4,
-        automationRate: 'k-rate' },
-    ];
-  }
-
   constructor() {
     super();
     this._ch  = null;
@@ -90,6 +81,15 @@ class PVProcessor extends AudioWorkletProcessor {
     this._on    = false;
     this._ended = false;
 
+    /* Pitch/tempo live in internal state (not AudioParams) so they can be set
+       atomically via the same port that carries 'load'. Using AudioParams
+       raced with the load message: process() would sometimes start with the
+       default pitch/tempo and audibly snap to the target value a few blocks
+       later — most obvious when auto-advancing between songs with different
+       pitch settings. */
+    this._pitch = 0;
+    this._tempo = 1;
+
     this.port.onmessage = ({ data: d }) => {
       if (d.t === 'load') {
         this._nc = d.ch.length;
@@ -101,6 +101,8 @@ class PVProcessor extends AudioWorkletProcessor {
         this._rw  = new Float32Array(RSIZE);
         this._lp  = Array.from({ length: this._nc }, () => new Float32Array(N));
         this._sp  = Array.from({ length: this._nc }, () => new Float32Array(N));
+        if (typeof d.pitch === 'number') this._pitch = d.pitch;
+        if (typeof d.tempo === 'number') this._tempo = d.tempo;
         this._primePhases();
         this._on  = true;
         this._ended = false;
@@ -113,12 +115,18 @@ class PVProcessor extends AudioWorkletProcessor {
         this._rw.fill(0);
         this._lp.forEach(a => a.fill(0));
         this._sp.forEach(a => a.fill(0));
+        if (typeof d.pitch === 'number') this._pitch = d.pitch;
+        if (typeof d.tempo === 'number') this._tempo = d.tempo;
         this._primePhases();
         this._on = true;
         this._ended = false;
 
       } else if (d.t === 'stop') {
         this._on = false;
+
+      } else if (d.t === 'setParams') {
+        if (typeof d.pitch === 'number') this._pitch = d.pitch;
+        if (typeof d.tempo === 'number') this._tempo = d.tempo;
       }
     };
   }
@@ -209,14 +217,14 @@ class PVProcessor extends AudioWorkletProcessor {
     this._ow += hs;
   }
 
-  process(_inputs, outputs, parameters) {
+  process(_inputs, outputs) {
     if (!this._on) return true;
 
     const out = outputs[0];
     const bs  = out[0]?.length ?? 128;
 
-    const pitch = parameters.pitch[0] ?? 0;
-    const tempo = parameters.tempo[0] ?? 1;
+    const pitch = this._pitch;
+    const tempo = this._tempo;
     const pf    = Math.pow(2, pitch / 12);
 
     /* Synthesis hop: phase vocoder stretches by pf/tempo.
