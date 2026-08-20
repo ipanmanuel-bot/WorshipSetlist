@@ -420,8 +420,10 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
 
   /* Helper: score a chroma vector → {root, mode} */
   const scoreChroma=(ch:number[])=>{
+    /* Very light smoothing — old 0.2/0.6/0.2 blur mixed A into A#, which is
+       the only note distinguishing E major from B major. See key-worker.js. */
     const sc=new Array(12).fill(0);
-    for(let i=0;i<12;i++) sc[i]=0.2*ch[(i+11)%12]+0.6*ch[i]+0.2*ch[(i+1)%12];
+    for(let i=0;i<12;i++) sc[i]=0.08*ch[(i+11)%12]+0.84*ch[i]+0.08*ch[(i+1)%12];
     const scores:{root:number,mode:'major'|'minor',score:number}[]=[];
     for(let root=0;root<12;root++){
       const ksM=Array.from({length:12},(_,i)=>KS_MAJOR[(i-root+12)%12]);
@@ -441,7 +443,7 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
        BELOW the winner scores within FIFTH_TOL, prefer it — that's the tonic.
        Also handles E/B: those keys differ by only one scale note (A vs A#),
        so their raw scores land very close and small biases flip the winner. */
-    const FIFTH_TOL=0.05;
+    const FIFTH_TOL=0.08;
     for(let i=1;i<scores.length;i++){
       const c=scores[i];
       if(c.mode!==best.mode) continue;
@@ -477,6 +479,8 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
         fc[pc]+=m*cw*cw/(h*h);
       }
     }
+    /* Bass gets 3× weight — bass instrument plays tonic roots most often, so
+       amplifying it makes the tonic win over dominant/subdominant. */
     for(let k=kLo;k<=kBass;k++){
       if(mag[k]<=mag[k-1]||mag[k]<=mag[k+1]) continue;
       const m=mag[k]/mxf; if(m<0.01) continue;
@@ -485,7 +489,7 @@ async function detectKey(audioBuffer:AudioBuffer):Promise<{root:number,mode:'maj
       const pc=((Math.round(midi)%12)+12)%12;
       const dev=midi-Math.round(midi);
       const cw=Math.cos(Math.PI*dev); if(cw<=0) continue;
-      fc[pc]+=m*cw*cw;
+      fc[pc]+=3*m*cw*cw;
     }
     const ft=fc.reduce((a,b)=>a+b,0);
     if(ft>1e-6){
